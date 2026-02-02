@@ -228,13 +228,7 @@ void onIMUData(float ax, float ay, float az, float gx, float gy, float gz)
     wandClient.updateAHRS(sample);
 
 #if USE_USB_HID_DEVICE
-    // Rate limit USB HID updates to ~60 Hz (every ~4th IMU sample at 234 Hz)
-    static uint8_t usb_update_counter = 0;
-    if (++usb_update_counter >= 4)
-    {
-        usbHID.updateMouse(gx, gy, gz);
-        usb_update_counter = 0;
-    }
+    // Mouse movement is handled via AHRS gesture path in updateAHRS()
 #endif
 
 #if ENABLE_HOME_ASSISTANT

@@ -169,6 +169,11 @@ AHRSTracker::AHRSTracker() : position_count(0), tracking(false), beta(0.1f), ini
     quat = Quaternion();           // Identity quaternion (1.0, 0.0, 0.0, 0.0) for AHRS
     start_quat = Quaternion(0.0f); // ZERO quaternion (0.0, 0.0, 0.0, 0.0) - matches Python
     inv_quat = Quaternion(0.0f);   // ZERO quaternion (0.0, 0.0, 0.0, 0.0) - matches Python
+    mouse_start_quat = Quaternion(0.0f);
+    mouse_inv_quat = Quaternion(0.0f);
+    mouse_ref_vec_x = mouse_ref_vec_y = mouse_ref_vec_z = 0.0f;
+    mouse_initial_yaw = 0.0f;
+    mouse_ref_ready = false;
     ref_vec_x = ref_vec_y = ref_vec_z = 0.0f;
     start_pos_x = start_pos_y = 0.0f;
     start_pos_z = -294.0f; // Match Python's default start_pos_z = -294.0
@@ -189,6 +194,149 @@ float AHRSTracker::invSqrt(float x)
     y = *(float *)&i;
     y = y * (1.5f - (halfx * y * y));
     return y;
+}
+
+void AHRSTracker::initReferenceFromCurrentQuat(Quaternion &start_q, Quaternion &inv_q,
+                                               float &ref_x, float &ref_y, float &ref_z,
+                                               float &initial_yaw_out)
+{
+    float roll, pitch, yaw;
+    toEuler(quat, roll, pitch, yaw);
+
+    initial_yaw_out = yaw;
+
+    float half_roll = roll * 0.5f;
+    float dStack_c = sinf(half_roll);
+    float dStack_14 = cosf(half_roll);
+
+    float half_pitch = pitch * 0.5f;
+    float dStack_1c = sinf(half_pitch);
+    float dStack_24 = cosf(half_pitch);
+
+    start_q.q0 = dStack_c * dStack_1c * 0.0f + dStack_14 * dStack_24;
+    start_q.q1 = dStack_c * dStack_24 - dStack_14 * dStack_1c * 0.0f;
+    start_q.q2 = dStack_c * dStack_24 * 0.0f + dStack_14 * dStack_1c;
+    start_q.q3 = dStack_14 * dStack_24 * 0.0f - dStack_c * dStack_1c;
+
+    float fVar4 = -1.0f / (start_q.q3 * start_q.q3 + start_q.q2 * start_q.q2 +
+                           start_q.q1 * start_q.q1 + start_q.q0 * start_q.q0);
+
+    float fVar1 = fVar4 * start_q.q0;
+    inv_q.q1 = fVar4 * start_q.q1;
+    float fVar2 = fVar1 * 0.0f;
+    float fVar7 = inv_q.q1 * 0.0f;
+    inv_q.q2 = fVar4 * start_q.q2;
+    inv_q.q3 = fVar4 * start_q.q3;
+    float fVar8 = inv_q.q2 * 0.0f;
+    fVar4 = inv_q.q3 * 0.0f;
+
+    float fVar5 = ((fVar7 - start_pos_z * fVar1) - fVar8) - fVar4;
+    float fVar3 = ((fVar2 - start_pos_z * inv_q.q1) - fVar8) - fVar4;
+    float fVar9 = ((fVar8 + fVar2) - start_pos_z * inv_q.q3) + fVar7;
+    fVar7 = (start_pos_z * inv_q.q2 + fVar4 + fVar2) - fVar7;
+
+    fVar8 = (fVar7 * start_q.q2 + fVar3 * start_q.q1 + fVar5 * start_q.q0) - fVar9 * start_q.q3;
+    fVar4 = fVar5 * start_q.q3 + ((fVar3 * start_q.q2 + fVar9 * start_q.q0) - fVar7 * start_q.q1);
+    float fVar10 = (fVar9 * start_q.q1 + fVar3 * start_q.q3 + fVar7 * start_q.q0) - fVar5 * start_q.q2;
+
+    float fVar6 = -1.0f / (inv_q.q3 * inv_q.q3 + inv_q.q2 * inv_q.q2 +
+                           inv_q.q1 * inv_q.q1 + fVar1 * fVar1);
+
+    inv_q.q0 = -fVar1;
+    fVar2 = -fVar1 * fVar6;
+    fVar5 = inv_q.q1 * fVar6;
+    float fVar11 = inv_q.q2 * fVar6;
+    fVar6 = inv_q.q3 * fVar6;
+    fVar7 = ((fVar2 * 0.0f - fVar5 * fVar8) - fVar11 * fVar4) - fVar6 * fVar10;
+    fVar9 = (fVar6 * fVar4 + (fVar5 * 0.0f - fVar8 * fVar2)) - fVar11 * fVar10;
+    fVar3 = fVar5 * fVar10 + ((fVar11 * 0.0f - fVar4 * fVar2) - fVar6 * fVar8);
+    fVar4 = (fVar11 * fVar8 + (fVar6 * 0.0f - fVar2 * fVar10)) - fVar5 * fVar4;
+
+    ref_x = (inv_q.q2 * fVar4 + (inv_q.q1 * fVar7 - fVar9 * inv_q.q0)) - inv_q.q3 * fVar3;
+    ref_y = (inv_q.q3 * fVar9 + ((inv_q.q2 * fVar7 - fVar3 * inv_q.q0) - inv_q.q1 * fVar4));
+    ref_z = ((fVar3 * inv_q.q1 + (fVar7 * inv_q.q3 - fVar4 * inv_q.q0)) - fVar9 * inv_q.q2);
+}
+
+bool AHRSTracker::computePositionFromReference(const Quaternion &start_q, const Quaternion &inv_q,
+                                               float ref_x, float ref_y, float ref_z,
+                                               float initial_yaw_in, Position2D &out_pos)
+{
+    float roll, pitch, yaw;
+    toEuler(quat, roll, pitch, yaw);
+
+    float fVar1 = yaw - initial_yaw_in;
+    if (fVar1 > M_PI)
+    {
+        fVar1 -= 2.0f * M_PI;
+    }
+    else if (fVar1 < -M_PI)
+    {
+        fVar1 += 2.0f * M_PI;
+    }
+
+    float half_roll = roll * 0.5f;
+    float dStack_24 = sinf(half_roll);
+    float dStack_2c = cosf(half_roll);
+
+    float half_pitch = pitch * 0.5f;
+    float dStack_14 = sinf(half_pitch);
+    float dStack_1c = cosf(half_pitch);
+
+    float half_yaw = fVar1 * 0.5f;
+    float dStack_34 = sinf(half_yaw);
+    float dStack_3c = cosf(half_yaw);
+
+    float fVar9 = dStack_34 * dStack_24 * dStack_14 + dStack_3c * dStack_2c * dStack_1c;
+    float fVar5 = dStack_3c * dStack_24 * dStack_1c - dStack_34 * dStack_2c * dStack_14;
+    float fVar11 = dStack_24 * dStack_1c * dStack_34 + dStack_2c * dStack_14 * dStack_3c;
+    float fVar3 = dStack_2c * dStack_1c * dStack_34 - dStack_24 * dStack_14 * dStack_3c;
+
+    float fVar7 = -1.0f / (fVar3 * fVar3 + fVar11 * fVar11 + fVar5 * fVar5 + fVar9 * fVar9);
+    float fVar2 = fVar7 * fVar9 * 0.0f;
+    float fVar10 = fVar7 * fVar5 * 0.0f;
+    float fVar6 = fVar7 * fVar11 * 0.0f;
+    float fVar8 = fVar7 * fVar3 * 0.0f;
+
+    float fVar4 = ((fVar10 - start_pos_z * fVar7 * fVar9) + fVar8) - fVar6;
+    fVar1 = ((fVar2 - start_pos_z * fVar7 * fVar5) - fVar6) - fVar8;
+    fVar6 = ((fVar6 + fVar2) - start_pos_z * fVar7 * fVar3) + fVar10;
+    fVar10 = (fVar7 * fVar11 * start_pos_z + fVar8 + fVar2) - fVar10;
+    fVar7 = (fVar10 * fVar11 + fVar1 * fVar5 + fVar4 * fVar9) - fVar6 * fVar3;
+    fVar2 = fVar4 * fVar3 + ((fVar1 * fVar11 + fVar6 * fVar9) - fVar10 * fVar5);
+    fVar4 = (fVar6 * fVar5 + fVar1 * fVar3 + fVar10 * fVar9) - fVar4 * fVar11;
+
+    fVar6 = -1.0f / (inv_q.q3 * inv_q.q3 + inv_q.q2 * inv_q.q2 + inv_q.q1 * inv_q.q1 + inv_q.q0 * inv_q.q0);
+    fVar8 = inv_q.q0 * fVar6;
+    fVar5 = inv_q.q1 * fVar6;
+    fVar3 = inv_q.q2 * fVar6;
+    fVar6 = fVar6 * inv_q.q3;
+
+    fVar11 = ((fVar8 * 0.0f - fVar5 * fVar7) - fVar3 * fVar2) - fVar6 * fVar4;
+    fVar1 = (fVar6 * fVar2 + (fVar5 * 0.0f - fVar7 * fVar8)) - fVar3 * fVar4;
+    float fVar12 = fVar5 * fVar4 + ((fVar3 * 0.0f - fVar2 * fVar8) - fVar6 * fVar7);
+    fVar2 = (fVar3 * fVar7 + (fVar6 * 0.0f - fVar8 * fVar4)) - fVar5 * fVar2;
+
+    fVar9 = -1.0f / (start_q.q3 * start_q.q3 + start_q.q2 * start_q.q2 + start_q.q1 * start_q.q1 + start_q.q0 * start_q.q0);
+    fVar3 = ((inv_q.q2 * fVar2 + inv_q.q1 * fVar11 + inv_q.q0 * fVar1) - inv_q.q3 * fVar12) - ref_x;
+    fVar7 = start_q.q0 * fVar9;
+    fVar10 = start_q.q1 * fVar9;
+
+    fVar4 = (inv_q.q3 * fVar1 + ((inv_q.q2 * fVar11 + inv_q.q0 * fVar12) - inv_q.q1 * fVar2)) - ref_y;
+    fVar8 = start_q.q2 * fVar9;
+    fVar5 = ((fVar12 * inv_q.q1 + fVar11 * inv_q.q3 + fVar2 * inv_q.q0) - fVar1 * inv_q.q2) - ref_z;
+    fVar9 = fVar9 * start_q.q3;
+
+    fVar2 = ((fVar7 * 0.0f - fVar10 * fVar3) - fVar8 * fVar4) - fVar9 * fVar5;
+    fVar1 = (fVar9 * fVar4 + (fVar10 * 0.0f - fVar3 * fVar7)) - fVar8 * fVar5;
+    fVar6 = fVar10 * fVar5 + ((fVar8 * 0.0f - fVar4 * fVar7) - fVar9 * fVar3);
+    fVar4 = (fVar8 * fVar3 + (fVar9 * 0.0f - fVar7 * fVar5)) - fVar10 * fVar4;
+
+    fVar3 = start_q.q3 * fVar1 + ((start_q.q2 * fVar2 + start_q.q0 * fVar6) - start_q.q1 * fVar4);
+    fVar1 = (fVar6 * start_q.q1 + fVar2 * start_q.q3 + fVar4 * start_q.q0) - fVar1 * start_q.q2;
+
+    out_pos.x = fVar3;
+    out_pos.y = fVar1;
+    return true;
 }
 
 void AHRSTracker::update(const IMUSample &sample)
@@ -250,98 +398,14 @@ void AHRSTracker::update(const IMUSample &sample)
     // If tracking, compute and store position - EXACT Python translation (spell_tracker.py lines 172-237)
     if (tracking && positions && position_count < MAX_POSITIONS)
     {
-        // Get Euler angles from current AHRS quaternion
-        float roll, pitch, yaw;
-        toEuler(quat, roll, pitch, yaw);
-
-        // Python line 175: fVar1 = yaw - self._state.initial_yaw
-        // Handle wrap-around: ensure yaw_delta is in range [-π, π]
-        float fVar1 = yaw - initial_yaw;
-        if (fVar1 > M_PI)
+        Position2D pos;
+        if (computePositionFromReference(start_quat, inv_quat, ref_vec_x, ref_vec_y, ref_vec_z,
+                                         initial_yaw, pos))
         {
-            fVar1 -= 2.0f * M_PI;
+            positions[position_count].x = pos.x;
+            positions[position_count].y = pos.y;
+            position_count++;
         }
-        else if (fVar1 < -M_PI)
-        {
-            fVar1 += 2.0f * M_PI;
-        }
-
-        // Python lines 177-179: half angles for roll
-        float half_roll = roll * 0.5f;
-        float dStack_24 = sinf(half_roll);
-        float dStack_2c = cosf(half_roll);
-
-        // Python lines 181-182: half angles for pitch
-        float half_pitch = pitch * 0.5f;
-        float dStack_14 = sinf(half_pitch);
-        float dStack_1c = cosf(half_pitch);
-
-        // Python lines 184-186: half angles for adjusted yaw
-        float half_yaw = fVar1 * 0.5f;
-        float dStack_34 = sinf(half_yaw);
-        float dStack_3c = cosf(half_yaw);
-
-        // Python lines 188-191: compute quaternion from Euler angles
-        float fVar9 = dStack_34 * dStack_24 * dStack_14 + dStack_3c * dStack_2c * dStack_1c;
-        float fVar5 = dStack_3c * dStack_24 * dStack_1c - dStack_34 * dStack_2c * dStack_14;
-        float fVar11 = dStack_24 * dStack_1c * dStack_34 + dStack_2c * dStack_14 * dStack_3c;
-        float fVar3 = dStack_2c * dStack_1c * dStack_34 - dStack_24 * dStack_14 * dStack_3c;
-
-        // Python lines 193-197: normalize by -1.0 / norm²
-        float fVar7 = -1.0f / (fVar3 * fVar3 + fVar11 * fVar11 + fVar5 * fVar5 + fVar9 * fVar9);
-        float fVar2 = fVar7 * fVar9 * 0.0f;  // CONST_NEG_0_0 = -0.0 = 0.0
-        float fVar10 = fVar7 * fVar5 * 0.0f; // CONST_0_0
-        float fVar6 = fVar7 * fVar11 * 0.0f; // CONST_0_0
-        float fVar8 = fVar7 * fVar3 * 0.0f;  // CONST_0_0
-
-        // Python lines 199-202: quaternion transformation with start_pos_z
-        float fVar4 = ((fVar10 - start_pos_z * fVar7 * fVar9) + fVar8) - fVar6;
-        fVar1 = ((fVar2 - start_pos_z * fVar7 * fVar5) - fVar6) - fVar8;
-        fVar6 = ((fVar6 + fVar2) - start_pos_z * fVar7 * fVar3) + fVar10;
-        fVar10 = (fVar7 * fVar11 * start_pos_z + fVar8 + fVar2) - fVar10;
-        fVar7 = (fVar10 * fVar11 + fVar1 * fVar5 + fVar4 * fVar9) - fVar6 * fVar3;
-        fVar2 = fVar4 * fVar3 + ((fVar1 * fVar11 + fVar6 * fVar9) - fVar10 * fVar5);
-        fVar4 = (fVar6 * fVar5 + fVar1 * fVar3 + fVar10 * fVar9) - fVar4 * fVar11;
-
-        // Python lines 207-211: normalize inv_quat and multiply
-        fVar6 = -1.0f / (inv_quat.q3 * inv_quat.q3 + inv_quat.q2 * inv_quat.q2 + inv_quat.q1 * inv_quat.q1 + inv_quat.q0 * inv_quat.q0);
-        fVar8 = inv_quat.q0 * fVar6;
-        fVar5 = inv_quat.q1 * fVar6;
-        fVar3 = inv_quat.q2 * fVar6;
-        fVar6 = fVar6 * inv_quat.q3;
-
-        // Python lines 213-216: quaternion multiplication
-        fVar11 = ((fVar8 * 0.0f - fVar5 * fVar7) - fVar3 * fVar2) - fVar6 * fVar4;
-        fVar1 = (fVar6 * fVar2 + (fVar5 * 0.0f - fVar7 * fVar8)) - fVar3 * fVar4;
-        float fVar12 = fVar5 * fVar4 + ((fVar3 * 0.0f - fVar2 * fVar8) - fVar6 * fVar7);
-        fVar2 = (fVar3 * fVar7 + (fVar6 * 0.0f - fVar8 * fVar4)) - fVar5 * fVar2;
-
-        // Python lines 218-221: normalize start_quat and compute offset from reference
-        fVar9 = -1.0f / (start_quat.q3 * start_quat.q3 + start_quat.q2 * start_quat.q2 + start_quat.q1 * start_quat.q1 + start_quat.q0 * start_quat.q0);
-        fVar3 = ((inv_quat.q2 * fVar2 + inv_quat.q1 * fVar11 + inv_quat.q0 * fVar1) - inv_quat.q3 * fVar12) - ref_vec_x;
-        fVar7 = start_quat.q0 * fVar9;
-        fVar10 = start_quat.q1 * fVar9;
-
-        // Python lines 223-226
-        fVar4 = (inv_quat.q3 * fVar1 + ((inv_quat.q2 * fVar11 + inv_quat.q0 * fVar12) - inv_quat.q1 * fVar2)) - ref_vec_y;
-        fVar8 = start_quat.q2 * fVar9;
-        fVar5 = ((fVar12 * inv_quat.q1 + fVar11 * inv_quat.q3 + fVar2 * inv_quat.q0) - fVar1 * inv_quat.q2) - ref_vec_z;
-        fVar9 = fVar9 * start_quat.q3;
-
-        // Python lines 228-231: quaternion multiplication
-        fVar2 = ((fVar7 * 0.0f - fVar10 * fVar3) - fVar8 * fVar4) - fVar9 * fVar5;
-        fVar1 = (fVar9 * fVar4 + (fVar10 * 0.0f - fVar3 * fVar7)) - fVar8 * fVar5;
-        fVar6 = fVar10 * fVar5 + ((fVar8 * 0.0f - fVar4 * fVar7) - fVar9 * fVar3);
-        fVar4 = (fVar8 * fVar3 + (fVar9 * 0.0f - fVar7 * fVar5)) - fVar10 * fVar4;
-
-        // Python lines 233-234: final position calculation
-        fVar3 = start_quat.q3 * fVar1 + ((start_quat.q2 * fVar2 + start_quat.q0 * fVar6) - start_quat.q1 * fVar4);
-        fVar1 = (fVar6 * start_quat.q1 + fVar2 * start_quat.q3 + fVar4 * start_quat.q0) - fVar1 * start_quat.q2;
-
-        // Python lines 236-237: store position if within buffer limit (0x2000 = 8192)
-        positions[position_count].x = fVar3;
-        positions[position_count].y = fVar1;
-        position_count++;
     }
 }
 
@@ -369,70 +433,9 @@ void AHRSTracker::startTracking()
     initial_yaw = yaw;
     ESP_LOGI(TAG, "Initial Euler: roll=%.2f, pitch=%.2f, yaw=%.2f", roll, pitch, yaw);
 
-    // Python lines 80-82: half_roll and trig functions (use EXACT variable names!)
-    float half_roll = roll * 0.5f;     // half_roll: np.float32
-    float dStack_c = sinf(half_roll);  // dStack_c: np.float32 = np.sin(half_roll)
-    float dStack_14 = cosf(half_roll); // dStack_14: np.float32 = np.cos(half_roll)
-
-    // Python lines 84-86: half_pitch and trig functions
-    float half_pitch = pitch * 0.5f;    // half_pitch: np.float32
-    float dStack_1c = sinf(half_pitch); // dStack_1c: np.float32 = np.sin(half_pitch)
-    float dStack_24 = cosf(half_pitch); // dStack_24: np.float32 = np.cos(half_pitch)
-
-    // Python lines 88-91: start_quat computation (yaw terms multiplied by 0.0)
-    start_quat.q0 = dStack_c * dStack_1c * 0.0f + dStack_14 * dStack_24;
-    start_quat.q1 = dStack_c * dStack_24 - dStack_14 * dStack_1c * 0.0f;
-    start_quat.q2 = dStack_c * dStack_24 * 0.0f + dStack_14 * dStack_1c;
-    start_quat.q3 = dStack_14 * dStack_24 * 0.0f - dStack_c * dStack_1c;
+    initReferenceFromCurrentQuat(start_quat, inv_quat, ref_vec_x, ref_vec_y, ref_vec_z, initial_yaw);
 
     ESP_LOGI(TAG, "start_quat: [%.4f, %.4f, %.4f, %.4f]", start_quat.q0, start_quat.q1, start_quat.q2, start_quat.q3);
-
-    // Python line 93: fVar4 = -1.0 / norm²
-    float fVar4 = -1.0f / (start_quat.q3 * start_quat.q3 + start_quat.q2 * start_quat.q2 +
-                           start_quat.q1 * start_quat.q1 + start_quat.q0 * start_quat.q0);
-
-    // Python lines 94-100: inv_quat initialization
-    float fVar1 = fVar4 * start_quat.q0; // fVar1: np.float32
-    inv_quat.q1 = fVar4 * start_quat.q1; // self._state.inv_quat_q1
-    float fVar2 = fVar1 * 0.0f;          // fVar1 * CONST_NEG_0_0 (which is -0.0 = 0.0)
-    float fVar7 = inv_quat.q1 * 0.0f;    // inv_quat_q1 * CONST_0_0
-    inv_quat.q2 = fVar4 * start_quat.q2; // self._state.inv_quat_q2
-    inv_quat.q3 = fVar4 * start_quat.q3; // self._state.inv_quat_q3
-    float fVar8 = inv_quat.q2 * 0.0f;    // inv_quat_q2 * CONST_0_0
-    fVar4 = inv_quat.q3 * 0.0f;          // fVar4 REUSED! = inv_quat_q3 * CONST_0_0
-
-    // Python lines 102-105: quaternion transformation of start_pos
-    float fVar5 = ((fVar7 - start_pos_z * fVar1) - fVar8) - fVar4;
-    float fVar3 = ((fVar2 - start_pos_z * inv_quat.q1) - fVar8) - fVar4;
-    float fVar9 = ((fVar8 + fVar2) - start_pos_z * inv_quat.q3) + fVar7;
-    fVar7 = (start_pos_z * inv_quat.q2 + fVar4 + fVar2) - fVar7; // fVar7 REUSED
-
-    // Python lines 107-109: quaternion multiply by start_quat
-    fVar8 = (fVar7 * start_quat.q2 + fVar3 * start_quat.q1 + fVar5 * start_quat.q0) - fVar9 * start_quat.q3;   // fVar8 REUSED
-    fVar4 = fVar5 * start_quat.q3 + ((fVar3 * start_quat.q2 + fVar9 * start_quat.q0) - fVar7 * start_quat.q1); // fVar4 REUSED
-    float fVar10 = (fVar9 * start_quat.q1 + fVar3 * start_quat.q3 + fVar7 * start_quat.q0) - fVar5 * start_quat.q2;
-
-    // Python line 111: fVar6 = -1.0 / norm² (NOTE: uses fVar1 from line 94, NOT the reused value!)
-    float fVar6 = -1.0f / (inv_quat.q3 * inv_quat.q3 + inv_quat.q2 * inv_quat.q2 +
-                           inv_quat.q1 * inv_quat.q1 + fVar1 * fVar1);
-
-    // Python lines 112-118: inv_quat finalization
-    inv_quat.q0 = -fVar1;        // self._state.inv_quat_q0 = -fVar1
-    fVar2 = -fVar1 * fVar6;      // fVar2 REUSED
-    fVar5 = inv_quat.q1 * fVar6; // fVar5 REUSED
-    float fVar11 = inv_quat.q2 * fVar6;
-    fVar6 = inv_quat.q3 * fVar6;                                                // fVar6 REUSED
-    fVar7 = ((fVar2 * 0.0f - fVar5 * fVar8) - fVar11 * fVar4) - fVar6 * fVar10; // fVar7 REUSED
-    fVar9 = (fVar6 * fVar4 + (fVar5 * 0.0f - fVar8 * fVar2)) - fVar11 * fVar10; // fVar9 REUSED
-    fVar3 = fVar5 * fVar10 + ((fVar11 * 0.0f - fVar4 * fVar2) - fVar6 * fVar8); // fVar3 REUSED
-    fVar4 = (fVar11 * fVar8 + (fVar6 * 0.0f - fVar2 * fVar10)) - fVar5 * fVar4; // fVar4 REUSED
-
-    // Python lines 124-126: final reference vector calculation
-    // CRITICAL: Use inv_quat.q0, NOT fVar1 (which was reused and has stale value)
-    ref_vec_x = (inv_quat.q2 * fVar4 + (inv_quat.q1 * fVar7 - fVar9 * inv_quat.q0)) - inv_quat.q3 * fVar3;
-    ref_vec_y = (inv_quat.q3 * fVar9 + ((inv_quat.q2 * fVar7 - fVar3 * inv_quat.q0) - inv_quat.q1 * fVar4));
-    ref_vec_z = ((fVar3 * inv_quat.q1 + (fVar7 * inv_quat.q3 - fVar4 * inv_quat.q0)) - fVar9 * inv_quat.q2);
-
     ESP_LOGI(TAG, "inv_quat: [%.4f, %.4f, %.4f, %.4f]", inv_quat.q0, inv_quat.q1, inv_quat.q2, inv_quat.q3);
     ESP_LOGI(TAG, "Ref vector: [%.4f, %.4f, %.4f]", ref_vec_x, ref_vec_y, ref_vec_z);
 
@@ -454,6 +457,7 @@ bool AHRSTracker::stopTracking(Position2D **out_positions, size_t *out_count)
     ESP_LOGI(TAG, "Captured %zu positions", position_count);
 
     tracking = false;
+    resetMouseReference();
 
     if (!positions)
     {
@@ -472,12 +476,33 @@ bool AHRSTracker::stopTracking(Position2D **out_positions, size_t *out_count)
     return true;
 }
 
+bool AHRSTracker::getMousePosition(Position2D &out_pos)
+{
+    if (!mouse_ref_ready)
+    {
+        initReferenceFromCurrentQuat(mouse_start_quat, mouse_inv_quat,
+                                     mouse_ref_vec_x, mouse_ref_vec_y, mouse_ref_vec_z,
+                                     mouse_initial_yaw);
+        mouse_ref_ready = true;
+    }
+
+    return computePositionFromReference(mouse_start_quat, mouse_inv_quat,
+                                        mouse_ref_vec_x, mouse_ref_vec_y, mouse_ref_vec_z,
+                                        mouse_initial_yaw, out_pos);
+}
+
+void AHRSTracker::resetMouseReference()
+{
+    mouse_ref_ready = false;
+}
+
 void AHRSTracker::reset()
 {
     quat = Quaternion();
     start_quat = Quaternion();
     position_count = 0;
     tracking = false;
+    mouse_ref_ready = false;
 }
 
 float AHRSTracker::wrapTo2Pi(float angle)

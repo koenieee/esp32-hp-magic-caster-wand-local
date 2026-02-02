@@ -939,16 +939,58 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
     // Python also updates AHRS continuously, not just during tracking
     size_t old_count = ahrsTracker.getPositionCount();
 
-    static bool has_last_pos = false;
-    static Position2D last_pos = {0.0f, 0.0f};
+    static bool was_tracking = false;
+    static bool has_last_mouse_pos = false;
+    static Position2D last_mouse_pos = {0.0f, 0.0f};
     static float accum_dx = 0.0f;
     static float accum_dy = 0.0f;
     static int mouse_counter = 0;
 
     ahrsTracker.update(sample);
 
+    bool is_tracking = ahrsTracker.isTracking();
+
+    if (is_tracking != was_tracking)
+    {
+        has_last_mouse_pos = false;
+        accum_dx = 0.0f;
+        accum_dy = 0.0f;
+        mouse_counter = 0;
+        was_tracking = is_tracking;
+    }
+
+    if (!is_tracking)
+    {
+        Position2D pos;
+        if (ahrsTracker.getMousePosition(pos))
+        {
+            if (!has_last_mouse_pos)
+            {
+                last_mouse_pos = pos;
+                has_last_mouse_pos = true;
+            }
+            else
+            {
+                float dx = pos.x - last_mouse_pos.x;
+                float dy = -(pos.y - last_mouse_pos.y);
+                accum_dx += dx;
+                accum_dy += dy;
+                last_mouse_pos = pos;
+
+                // Rate limit mouse updates to ~60 Hz (every 4th sample)
+                if (++mouse_counter >= 4)
+                {
+                    usbHID.updateMouseFromGesture(accum_dx, accum_dy);
+                    accum_dx = 0.0f;
+                    accum_dy = 0.0f;
+                    mouse_counter = 0;
+                }
+            }
+        }
+    }
+
     // Only broadcast gesture points if tracking is active
-    if (ahrsTracker.isTracking())
+    if (is_tracking)
     {
         size_t new_count = ahrsTracker.getPositionCount();
 
@@ -957,30 +999,6 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
             const Position2D *positions = ahrsTracker.getPositions();
             if (positions && new_count > 0)
             {
-                const Position2D &pos = positions[new_count - 1];
-                if (!has_last_pos)
-                {
-                    last_pos = pos;
-                    has_last_pos = true;
-                }
-                else
-                {
-                    float dx = pos.x - last_pos.x;
-                    float dy = -(pos.y - last_pos.y);
-                    accum_dx += dx;
-                    accum_dy += dy;
-                    last_pos = pos;
-
-                    // Rate limit mouse updates to ~60 Hz (every 4th point)
-                    if (new_count == 2 || ++mouse_counter >= 4)
-                    {
-                        usbHID.updateMouseFromGesture(accum_dx, accum_dy);
-                        accum_dx = 0.0f;
-                        accum_dy = 0.0f;
-                        mouse_counter = 0;
-                    }
-                }
-
                 if (webServer)
                 {
                     // Rate limit: Only broadcast every 4th position (~60 Hz instead of 234 Hz)
@@ -990,20 +1008,13 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                     // Always broadcast position[1] immediately after tracking starts
                     if (new_count == 2 || ++broadcast_counter >= 4)
                     {
+                        const Position2D &pos = positions[new_count - 1];
                         webServer->broadcastGesturePoint(pos.x, pos.y);
                         broadcast_counter = 0;
                     }
                 }
             }
         }
-    }
-    else
-    {
-        // Reset mouse gesture state when tracking stops
-        has_last_pos = false;
-        accum_dx = 0.0f;
-        accum_dy = 0.0f;
-        mouse_counter = 0;
     }
 }
 

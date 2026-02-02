@@ -364,7 +364,7 @@ void USBHIDManager::updateMouse(float gyro_x, float gyro_y, float gyro_z)
 void USBHIDManager::updateMouseFromGesture(float delta_x, float delta_y)
 {
 #if USE_USB_HID_DEVICE
-    if (!initialized || !mouse_enabled)
+    if (!initialized || !mouse_enabled || in_spell_mode)
         return;
 
     float scale = mouse_sensitivity;
