@@ -1,0 +1,8 @@
+# 8MB Flash layout for Seeed XIAO ESP32S3
+# ESP32-S3 has 8MB Flash + 8MB PSRAM - optimized for larger apps with TensorFlow
+nvs,      data, nvs,     0x9000,  0x6000,
+otadata,  data, ota,     0xf000,  0x2000,
+factory,  app,  factory, 0x10000, 0x300000,
+model,    data, 0x40,    0x310000,0x70000,
+coredump, data, coredump,0x380000,0x10000,
+spiffs,   data, spiffs,  0x390000,0x470000,

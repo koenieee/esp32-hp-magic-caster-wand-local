@@ -1,0 +1,5 @@
+build/
+venv/
+model.tflite
+data/*
+managed_components/

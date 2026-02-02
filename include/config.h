@@ -1,0 +1,57 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// USB HID Support - enabled for ESP32-S3 composite HID + CDC (logs)
+#define USE_USB_HID_DEVICE 1
+
+// Wand BLE UUIDs
+#define WAND_SERVICE_UUID "57420001-587e-48a0-974c-544d6163c577"
+#define WAND_COMMAND_UUID "57420002-587e-48a0-974c-544d6163c577"
+#define WAND_NOTIFY_UUID "57420003-587e-48a0-974c-544d6163c577"
+#define WAND_BATTERY_UUID "00002a19-0000-1000-8000-00805f9b34fb"
+
+// Wand MAC address (set your wand's MAC here)
+#define WAND_MAC_ADDRESS "C2:BD:5D:3C:67:4E"
+
+// Home Assistant Integration (set to 0 to disable WiFi/MQTT)
+#define ENABLE_HOME_ASSISTANT 1 // Re-enabled - model is memory-mapped, plenty of RAM available
+
+// WiFi Mode: 0 = Access Point (default), 1 = Station (connect to existing WiFi)
+#define USE_WIFI_AP_MODE 0 // Set to 1 for station mode (connect to existing WiFi)
+
+// WiFi Access Point Configuration (when USE_WIFI_AP_MODE = 0)
+#define AP_SSID "MagicWand-ESP32"
+#define AP_PASSWORD "" // Empty = open network (no password required)
+#define AP_CHANNEL 1
+#define AP_MAX_CONNECTIONS 4
+
+// WiFi Station Configuration (when USE_WIFI_AP_MODE = 1 - for Home Assistant)
+#define WIFI_SSID "your_wifi_ssid"
+#define WIFI_PASSWORD "your_wifi_password"
+#define WIFI_PASS WIFI_PASSWORD // Alias for compatibility
+
+// MQTT Configuration (optional - for HA integration)
+#define MQTT_SERVER "192.168.1.100"
+#define MQTT_PORT 1883
+#define MQTT_USER "homeassistant"
+#define MQTT_PASSWORD "your_mqtt_password"
+#define MQTT_TOPIC_SPELL "wand/spell"
+#define MQTT_TOPIC_CONFIDENCE "wand/confidence"
+
+// Spell Detection Configuration
+#define SPELL_CONFIDENCE_THRESHOLD 0.99f
+// MAX_POSITIONS defined in spell_detector.h
+#define SPELL_SAMPLE_COUNT 50
+
+// IMU Sensor Scaling (from Android app)
+#define ACCELEROMETER_SCALE 0.00048828125f // Scale to G-forces
+#define GYROSCOPE_SCALE 0.0010908308f      // Scale to rad/s
+#define GRAVITY_CONSTANT 9.8100004196167f
+#define IMU_SAMPLE_PERIOD 0.0042735f // ~234 Hz
+
+// Debug Configuration
+#define DEBUG_SERIAL true
+#define DEBUG_IMU_DATA false
+#define DEBUG_SPELL_TRACKING true
+
+#endif // CONFIG_H
