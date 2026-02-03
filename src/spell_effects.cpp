@@ -51,15 +51,15 @@ size_t SpellEffects::buildEffect(const char *spell_name, uint8_t *buffer, size_t
     // Build effect based on spell name
     if (strcmp(spell_name, "Lumos") == 0)
     {
-        // Buzz 150ms + White LED 2s
-        len += addBuzz(buffer, len, 150);
+        // Buzz 50ms + White LED 2s (reduced vibration)
+        len += addBuzz(buffer, len, 50);
         len += addLEDTransition(buffer, len, (uint8_t)LedGroup::TIP,
                                 255, 255, 255, 2000);
     }
     else if (strcmp(spell_name, "Nox") == 0)
     {
-        // Buzz 100ms + Purple flash + Clear
-        len += addBuzz(buffer, len, 100);
+        // Buzz 30ms + Purple flash + Clear (reduced vibration)
+        len += addBuzz(buffer, len, 30);
         len += addLEDTransition(buffer, len, (uint8_t)LedGroup::TIP,
                                 51, 0, 51, 200);
         len += addDelay(buffer, len, 100);
@@ -67,57 +67,57 @@ size_t SpellEffects::buildEffect(const char *spell_name, uint8_t *buffer, size_t
     }
     else if (strcmp(spell_name, "Verdimillious") == 0 || strcmp(spell_name, "Reducto") == 0)
     {
-        // Green spell effect
-        len += addBuzz(buffer, len, 200);
+        // Green spell effect (reduced vibration)
+        len += addBuzz(buffer, len, 50);
         len += addLEDTransition(buffer, len, (uint8_t)LedGroup::TIP,
                                 0, 255, 0, 200);
     }
     else if (strcmp(spell_name, "Incendio") == 0 || strcmp(spell_name, "Flagrate") == 0)
     {
-        // Fire spell effect (orange)
-        len += addBuzz(buffer, len, 150);
+        // Fire spell effect (orange, reduced vibration)
+        len += addBuzz(buffer, len, 50);
         len += addLEDTransition(buffer, len, (uint8_t)LedGroup::TIP,
                                 255, 102, 0, 400);
     }
     else if (strcmp(spell_name, "Expelliarmus") == 0)
     {
-        // Red disarming spell
-        len += addBuzz(buffer, len, 200);
+        // Red disarming spell (reduced vibration)
+        len += addBuzz(buffer, len, 50);
         len += addLEDTransition(buffer, len, (uint8_t)LedGroup::TIP,
                                 255, 0, 0, 300);
     }
     else if (strcmp(spell_name, "Stupefy") == 0)
     {
-        // Red stunning spell with longer buzz
-        len += addBuzz(buffer, len, 250);
+        // Red stunning spell (reduced vibration)
+        len += addBuzz(buffer, len, 60);
         len += addLEDTransition(buffer, len, (uint8_t)LedGroup::TIP,
                                 200, 0, 0, 400);
     }
     else if (strcmp(spell_name, "Protego") == 0)
     {
-        // Blue shield spell
-        len += addBuzz(buffer, len, 150);
+        // Blue shield spell (reduced vibration)
+        len += addBuzz(buffer, len, 50);
         len += addLEDTransition(buffer, len, (uint8_t)LedGroup::TIP,
                                 0, 100, 255, 500);
     }
     else if (strcmp(spell_name, "Wingardium Leviosa") == 0)
     {
-        // Light blue levitation spell
-        len += addBuzz(buffer, len, 100);
+        // Light blue levitation spell (reduced vibration)
+        len += addBuzz(buffer, len, 40);
         len += addLEDTransition(buffer, len, (uint8_t)LedGroup::TIP,
                                 100, 200, 255, 600);
     }
     else if (strcmp(spell_name, "Accio") == 0)
     {
-        // Cyan summoning spell
-        len += addBuzz(buffer, len, 120);
+        // Cyan summoning spell (reduced vibration)
+        len += addBuzz(buffer, len, 40);
         len += addLEDTransition(buffer, len, (uint8_t)LedGroup::TIP,
                                 0, 255, 255, 300);
     }
     else
     {
-        // Default effect for unknown spells (blue flash)
-        len += addBuzz(buffer, len, 100);
+        // Default effect for unknown spells (blue flash, reduced vibration)
+        len += addBuzz(buffer, len, 40);
         len += addLEDTransition(buffer, len, (uint8_t)LedGroup::TIP,
                                 0, 100, 255, 200);
     }

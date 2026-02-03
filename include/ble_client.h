@@ -9,6 +9,7 @@
 #include "nimble/nimble_port_freertos.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
+#include "esp_bt.h"
 #include "spell_detector.h"
 #include "wand_commands.h"
 #include "wand_protocol.h"

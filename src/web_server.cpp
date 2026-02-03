@@ -8,7 +8,9 @@
 #include <string.h>
 
 // Forward declaration from main.cpp
+#if USE_USB_HID_DEVICE
 extern USBHIDManager usbHID;
+#endif
 
 static const char *TAG = "web_server";
 
@@ -1979,6 +1981,7 @@ esp_err_t WebServer::settings_get_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "settings_get_handler called!");
 
     // Return mouse sensitivity and all 73 spell keycodes
+#if USE_USB_HID_DEVICE
     char buffer[2048];
     int offset = 0;
 
@@ -1997,6 +2000,10 @@ esp_err_t WebServer::settings_get_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buffer);
+#else
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"status\":\"disabled\",\"message\":\"USB HID not enabled\"}");
+#endif
     return ESP_OK;
 }
 
@@ -2025,6 +2032,7 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "Received settings: %s", buffer);
 
     // Parse JSON - expect format: {"mouse_sensitivity": 1.5, "spells": [0, 58, 0, ...]}
+#if USE_USB_HID_DEVICE
     float mouse_sens = 1.0f;
     char *mouse_ptr = strstr(buffer, "\"mouse_sensitivity\"");
     if (mouse_ptr)
@@ -2072,8 +2080,10 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
             }
         }
     }
+#endif
 
     // Save to NVS
+#if USE_USB_HID_DEVICE
     if (usbHID.saveSettings())
     {
         httpd_resp_set_type(req, "application/json");
@@ -2088,12 +2098,19 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
         free(buffer);
         return ESP_FAIL;
     }
+#else
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"status\":\"disabled\",\"message\":\"USB HID not enabled\"}");
+    free(buffer);
+    return ESP_OK;
+#endif
 }
 
 esp_err_t WebServer::settings_reset_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "settings_reset_handler called!");
 
+#if USE_USB_HID_DEVICE
     if (usbHID.resetSettings())
     {
         httpd_resp_set_type(req, "application/json");
@@ -2106,4 +2123,9 @@ esp_err_t WebServer::settings_reset_handler(httpd_req_t *req)
         httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Failed to reset settings\"}");
         return ESP_FAIL;
     }
+#else
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"status\":\"disabled\",\"message\":\"USB HID not enabled\"}");
+    return ESP_OK;
+#endif
 }

@@ -15,7 +15,9 @@
 #include "services/gatt/ble_svc_gatt.h"
 
 static const char *TAG = "ble_client";
+#if USE_USB_HID_DEVICE
 extern USBHIDManager usbHID;
+#endif
 
 // Global for scan callback
 static WebServer *g_web_server = nullptr;
@@ -647,6 +649,12 @@ bool WandBLEClient::begin(const unsigned char *model_data, size_t model_size)
         return false;
     }
 
+    // Boost BLE TX power for Seeeduino XIAO's weaker PCB antenna
+    ESP_LOGI(TAG, "Setting BLE TX power to maximum for better range...");
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_P9);
+
     nimble_port_freertos_init(ble_host_task);
     return true;
 }
@@ -683,17 +691,17 @@ bool WandBLEClient::connect(const char *address)
 
     peer_addr = addr;
 
-    // Configure connection parameters for better stability with WiFi coexistence
-    // These params prioritize connection stability over low latency
+    // Configure connection parameters - use standard values that NimBLE accepts
+    // Values must be in valid ranges per Bluetooth spec
     struct ble_gap_conn_params conn_params;
-    conn_params.scan_itvl = 0x0010;           // 10ms scan interval
-    conn_params.scan_window = 0x0010;         // 10ms scan window
-    conn_params.itvl_min = 0x0018;            // 30ms min connection interval (24 * 1.25ms)
-    conn_params.itvl_max = 0x0028;            // 50ms max connection interval (40 * 1.25ms)
+    conn_params.scan_itvl = 0x0010;           // 10ms (16 * 0.625ms) - standard
+    conn_params.scan_window = 0x0010;         // 10ms (16 * 0.625ms) - must be <= scan_itvl
+    conn_params.itvl_min = 0x0018;            // 30ms (24 * 1.25ms) - standard range
+    conn_params.itvl_max = 0x0028;            // 50ms (40 * 1.25ms) - standard range
     conn_params.latency = 0;                  // No slave latency
     conn_params.supervision_timeout = 0x0C80; // 32 seconds (3200 * 10ms)
-    conn_params.min_ce_len = 0x0010;          // 10ms
-    conn_params.max_ce_len = 0x0300;          // 480ms
+    conn_params.min_ce_len = 0x0010;          // 10ms (16 * 0.625ms)
+    conn_params.max_ce_len = 0x0300;          // 480ms (768 * 0.625ms)
 
     ESP_LOGI(TAG, "Attempting connection to %s (random address type) with 32s supervision timeout", address);
     rc = ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &addr, 30000, &conn_params,
@@ -824,12 +832,17 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
         return;
     }
 
+    // Count pressed buttons for easier tracking
+    uint8_t buttonsPressed = __builtin_popcount(buttonState & 0x0F);
+    bool enoughButtonsPressed = (buttonsPressed >= BUTTON_MIN_FOR_TRACKING);
+    bool wasEnoughPressed = (__builtin_popcount(lastButtonState & 0x0F) >= BUTTON_MIN_FOR_TRACKING);
+
     if (buttonState != lastButtonState)
     {
         bool b1 = buttonState & 0x01, b2 = buttonState & 0x02,
              b3 = buttonState & 0x04, b4 = buttonState & 0x08;
-        ESP_LOGI(TAG, "🔘 Buttons: [1]=%s [2]=%s [3]=%s [4]=%s",
-                 b1 ? "●" : "○", b2 ? "●" : "○", b3 ? "●" : "○", b4 ? "●" : "○");
+        ESP_LOGI(TAG, "🔘 Buttons: [1]=%s [2]=%s [3]=%s [4]=%s (%d/4 pressed)",
+                 b1 ? "●" : "○", b2 ? "●" : "○", b3 ? "●" : "○", b4 ? "●" : "○", buttonsPressed);
 
         // Broadcast button state to web GUI
         if (webServer)
@@ -838,8 +851,8 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
         }
     }
 
-    // All buttons pressed - start tracking
-    if (buttonState == BUTTON_ALL_PRESSED && lastButtonState != BUTTON_ALL_PRESSED)
+    // 3+ buttons pressed - start tracking (was 4 buttons required)
+    if (enoughButtonsPressed && !wasEnoughPressed)
     {
         // Log heap status before starting tracking
         ESP_LOGI(TAG, "Free heap before tracking: %lu bytes", esp_get_free_heap_size());
@@ -849,10 +862,12 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
         if (!ahrsTracker.isTracking())
         {
             ahrsTracker.startTracking();
-            ESP_LOGI(TAG, "Started spell tracking");
+            ESP_LOGI(TAG, "Started spell tracking (%d buttons pressed)", buttonsPressed);
 
             // Disable mouse movement during spell tracking
+#if USE_USB_HID_DEVICE
             usbHID.setInSpellMode(true);
+#endif
 
             // Notify web visualizer (don't broadcast position[0], wait for position[1])
             if (webServer)
@@ -862,7 +877,7 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
         }
     }
     // Buttons released - detect spell
-    else if (buttonState != BUTTON_ALL_PRESSED && lastButtonState == BUTTON_ALL_PRESSED)
+    else if (!enoughButtonsPressed && wasEnoughPressed)
     {
         // Clear wand LEDs after spell tracking
         wandCommands.clearAllLEDs();
@@ -883,7 +898,9 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
                         spellCallback(spell_name, spellDetector.getConfidence());
 
                         // Send mapped keyboard key for detected spell
+#if USE_USB_HID_DEVICE
                         usbHID.sendSpellKeyboardForSpell(spell_name);
+#endif
                     }
                     else if (!spell_name)
                     {
@@ -902,7 +919,9 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
             }
 
             // Re-enable mouse movement after spell tracking
+#if USE_USB_HID_DEVICE
             usbHID.setInSpellMode(false);
+#endif
 
             // Notify web visualizer
             if (webServer)
@@ -974,7 +993,9 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                     // Rate limit mouse updates to ~60 Hz (every 4th point)
                     if (new_count == 2 || ++mouse_counter >= 4)
                     {
+#if USE_USB_HID_DEVICE
                         usbHID.updateMouseFromGesture(accum_dx, accum_dy);
+#endif
                         accum_dx = 0.0f;
                         accum_dy = 0.0f;
                         mouse_counter = 0;
