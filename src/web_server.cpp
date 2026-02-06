@@ -417,13 +417,26 @@ static const char index_html[] = R"rawliteral(
                         </div>
                     </div>
                     <div style="background: #222; padding: 10px; border-radius: 5px; margin-top: 10px;">
+                        <h4 style="margin: 0 0 10px 0; color: #4CAF50;">Home Assistant MQTT Settings</h4>
                         <div style="margin: 10px 0;">
                             <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
                                 <input type="checkbox" id="ha-mqtt-enabled" style="width: 18px; height: 18px;">
-                                <span>Home Assistant MQTT Enabled</span>
+                                <span>Enable MQTT</span>
                             </label>
-                            <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Restart required for this change to take effect</div>
                         </div>
+                        <div style="margin: 10px 0;">
+                            <label style="display: block; margin-bottom: 5px;">MQTT Broker URI:</label>
+                            <input type="text" id="mqtt-broker" placeholder="mqtt://192.168.1.100:1883" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                        </div>
+                        <div style="margin: 10px 0;">
+                            <label style="display: block; margin-bottom: 5px;">MQTT Username:</label>
+                            <input type="text" id="mqtt-username" placeholder="homeassistant" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                        </div>
+                        <div style="margin: 10px 0;">
+                            <label style="display: block; margin-bottom: 5px;">MQTT Password:</label>
+                            <input type="password" id="mqtt-password" placeholder="password" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                        </div>
+                        <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Restart required after changing MQTT settings</div>
                     </div>
                 </div>
             </div>
@@ -431,6 +444,56 @@ static const char index_html[] = R"rawliteral(
                 <button class="button" onclick="saveSettings()">💾 Save Settings</button>
                 <button class="button secondary" onclick="loadSettings()">🔄 Load Settings</button>
                 <button class="button danger" onclick="resetSettings()">🔁 Reset to Defaults</button>
+            </div>
+        </div>
+        
+        <div class="ble-controls">
+            <h3>📡 WiFi & Network Settings</h3>
+            <div style="background: #222; padding: 15px; border-radius: 5px; margin-bottom: 10px;">
+                <h4 style="margin: 0 0 10px 0; color: #4CAF50;">WiFi Client Mode</h4>
+                <div style="margin: 10px 0;">
+                    <button class="button" onclick="scanWifi()">🔍 Scan WiFi Networks</button>
+                    <div id="wifiScanStatus" style="margin-top: 10px; color: #888;"></div>
+                    <div id="wifiResults" class="scan-results" style="max-height: 200px;"></div>
+                </div>
+                <div style="margin: 10px 0;">
+                    <label style="display: block; margin-bottom: 5px;">WiFi SSID:</label>
+                    <input type="text" id="wifi-ssid" placeholder="Your WiFi Network" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                </div>
+                <div style="margin: 10px 0;">
+                    <label style="display: block; margin-bottom: 5px;">WiFi Password:</label>
+                    <input type="password" id="wifi-password" placeholder="WiFi Password" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                </div>
+                <button class="button" onclick="connectWifi()">🌐 Connect to WiFi</button>
+                <div id="wifiConnectStatus" style="margin-top: 10px; color: #888;"></div>
+            </div>
+            <div style="background: #222; padding: 15px; border-radius: 5px; margin-bottom: 10px;">
+                <h4 style="margin: 0 0 10px 0; color: #4CAF50;">Hotspot / Access Point Mode</h4>
+                <div style="margin: 10px 0;">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="hotspot-enabled" style="width: 18px; height: 18px;">
+                        <span>Enable Hotspot Mode</span>
+                    </label>
+                </div>
+                <div style="margin: 10px 0;">
+                    <label style="display: block; margin-bottom: 5px;">Hotspot SSID:</label>
+                    <input type="text" id="hotspot-ssid" placeholder="MagicWand-AP" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                </div>
+                <div style="margin: 10px 0;">
+                    <label style="display: block; margin-bottom: 5px;">Hotspot Password:</label>
+                    <input type="password" id="hotspot-password" placeholder="Min 8 characters" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                </div>
+                <div style="margin: 10px 0;">
+                    <label style="display: block; margin-bottom: 5px;">WiFi Channel (1-13):</label>
+                    <input type="number" id="hotspot-channel" min="1" max="13" value="1" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                </div>
+                <button class="button" onclick="saveHotspotSettings()">💾 Save Hotspot Settings</button>
+                <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Restart required to apply hotspot changes</div>
+            </div>
+            <div style="background: #222; padding: 15px; border-radius: 5px;">
+                <h4 style="margin: 0 0 10px 0; color: #4CAF50;">System Control</h4>
+                <button class="button danger" onclick="rebootDevice()">🔄 Reboot Device</button>
+                <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Device will restart in 2 seconds</div>
             </div>
         </div>
         
@@ -529,6 +592,22 @@ static const char index_html[] = R"rawliteral(
         
         // WebSocket connection
         let ws = null;
+
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            const safeType = type === 'error' ? 'error' : 'success';
+            toast.className = `toast ${safeType}`;
+            const icon = document.createElement('span');
+            icon.textContent = safeType === 'error' ? 'X' : 'V';
+            const text = document.createElement('span');
+            text.textContent = message;
+            toast.appendChild(icon);
+            toast.appendChild(text);
+            document.body.appendChild(toast);
+            setTimeout(() => {
+                toast.remove();
+            }, 3000);
+        }
         
         function connectWebSocket() {
             const wsUrl = `ws://${window.location.host}/ws`;
@@ -804,6 +883,32 @@ static const char index_html[] = R"rawliteral(
         
         // Initialize gesture canvas
         clearGestureCanvas();
+        
+        // Toast notification function
+        function showToast(message, type = 'success') {
+            // Remove any existing toasts
+            const existingToasts = document.querySelectorAll('.toast');
+            existingToasts.forEach(toast => toast.remove());
+            
+            // Create new toast
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            
+            // Add to document
+            document.body.appendChild(toast);
+            
+            // Trigger animation by forcing reflow
+            setTimeout(() => {
+                toast.style.opacity = '1';
+            }, 10);
+            
+            // Remove after 3 seconds
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
         
         // BLE Management Functions
         let scanResults = [];
@@ -1260,6 +1365,9 @@ static const char index_html[] = R"rawliteral(
                 gamepad_deadzone: parseFloat(document.getElementById('gamepad-deadzone').value),
                 gamepad_invert_y: document.getElementById('invert-gamepad-y').checked,
                 ha_mqtt_enabled: document.getElementById('ha-mqtt-enabled').checked,
+                mqtt_broker: document.getElementById('mqtt-broker').value,
+                mqtt_username: document.getElementById('mqtt-username').value,
+                mqtt_password: document.getElementById('mqtt-password').value,
                 spells: [],
                 gamepad_spells: []
             };
@@ -1307,6 +1415,9 @@ static const char index_html[] = R"rawliteral(
                     document.getElementById('gpad-deadzone-value').textContent = ((data.gamepad_deadzone !== undefined) ? data.gamepad_deadzone : 0.05).toFixed(2);
                     document.getElementById('invert-gamepad-y').checked = data.gamepad_invert_y !== false;
                     document.getElementById('ha-mqtt-enabled').checked = data.ha_mqtt_enabled !== false;
+                    document.getElementById('mqtt-broker').value = data.mqtt_broker || '';
+                    document.getElementById('mqtt-username').value = data.mqtt_username || '';
+                    document.getElementById('mqtt-password').value = data.mqtt_password || '';
                     
                     // Load spell keycodes
                     if (data.spells && data.spells.length === SPELL_NAMES.length) {
@@ -1373,6 +1484,149 @@ static const char index_html[] = R"rawliteral(
         
         // Load stored MAC on page load
         setTimeout(loadStoredMac, 1000);
+        
+        // WiFi Management Functions
+        function scanWifi() {
+            const btn = event.target;
+            const status = document.getElementById('wifiScanStatus');
+            const results = document.getElementById('wifiResults');
+            
+            btn.disabled = true;
+            btn.textContent = '⏳ Scanning...';
+            status.textContent = 'Scanning for WiFi networks...';
+            results.innerHTML = '';
+            
+            fetch('/wifi/scan', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.networks && data.networks.length > 0) {
+                        status.textContent = `Found ${data.networks.length} network(s)`;
+                        data.networks.forEach(network => {
+                            const item = document.createElement('div');
+                            item.className = 'scan-item';
+                            item.innerHTML = `
+                                <div class="scan-info">
+                                    <div style="font-weight: bold;">${network.ssid}</div>
+                                    <div class="rssi">RSSI: ${network.rssi} dBm | Security: ${network.auth}</div>
+                                </div>
+                                <button class="button" onclick="selectWifiNetwork('${network.ssid}')">Select</button>
+                            `;
+                            results.appendChild(item);
+                        });
+                    } else {
+                        status.textContent = 'No networks found';
+                    }
+                    btn.disabled = false;
+                    btn.textContent = '🔍 Scan WiFi Networks';
+                })
+                .catch(error => {
+                    status.textContent = 'Scan failed: ' + error;
+                    btn.disabled = false;
+                    btn.textContent = '🔍 Scan WiFi Networks';
+                    showToast('WiFi scan failed', 'error');
+                });
+        }
+        
+        function selectWifiNetwork(ssid) {
+            document.getElementById('wifi-ssid').value = ssid;
+            showToast(`Selected: ${ssid}`, 'success');
+        }
+        
+        function connectWifi() {
+            const ssid = document.getElementById('wifi-ssid').value;
+            const password = document.getElementById('wifi-password').value;
+            const status = document.getElementById('wifiConnectStatus');
+            
+            if (!ssid) {
+                showToast('Please enter WiFi SSID', 'error');
+                return;
+            }
+            
+            status.textContent = 'Connecting to WiFi...';
+            
+            fetch('/wifi/connect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ssid: ssid, password: password })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    status.textContent = 'Connected successfully!';
+                    showToast('Connected to WiFi', 'success');
+                } else {
+                    status.textContent = 'Connection failed: ' + (data.message || 'Unknown error');
+                    showToast('WiFi connection failed', 'error');
+                }
+            })
+            .catch(error => {
+                status.textContent = 'Connection failed: ' + error;
+                showToast('WiFi connection failed', 'error');
+            });
+        }
+        
+        function saveHotspotSettings() {
+            const enabled = document.getElementById('hotspot-enabled').checked;
+            const ssid = document.getElementById('hotspot-ssid').value;
+            const password = document.getElementById('hotspot-password').value;
+            const channel = parseInt(document.getElementById('hotspot-channel').value);
+            
+            if (enabled && ssid.length === 0) {
+                showToast('Hotspot SSID cannot be empty', 'error');
+                return;
+            }
+            
+            if (enabled && password.length > 0 && password.length < 8) {
+                showToast('Hotspot password must be at least 8 characters', 'error');
+                return;
+            }
+            
+            fetch('/hotspot/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    enabled: enabled,
+                    ssid: ssid,
+                    password: password,
+                    channel: channel
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('Hotspot settings saved! Restart required.', 'success');
+                } else {
+                    showToast('Failed to save hotspot settings', 'error');
+                }
+            })
+            .catch(error => {
+                showToast('Failed to save hotspot settings', 'error');
+                console.error('Hotspot save error:', error);
+            });
+        }
+        
+        function rebootDevice() {
+            if (!confirm('⚠️ Are you sure you want to reboot the device?')) {
+                return;
+            }
+            
+            showToast('Rebooting device...', 'success');
+            
+            fetch('/system/reboot', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    showToast('Device rebooting...', 'success');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 5000);
+                })
+                .catch(error => {
+                    showToast('Reboot command sent', 'success');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 5000);
+                });
+        }
     </script>
 </body>
 </html>
@@ -1432,7 +1686,7 @@ bool WebServer::begin(uint16_t port)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = port;
     config.max_open_sockets = 7;
-    config.max_uri_handlers = 15; // Support 12 handlers + buffer for future endpoints
+    config.max_uri_handlers = 20; // Support all handlers + buffer for future endpoints
     config.lru_purge_enable = true;
 
     if (httpd_start(&server, &config) != ESP_OK)
@@ -1601,9 +1855,61 @@ bool WebServer::begin(uint16_t port)
         ESP_LOGW(TAG, "Settings RESET handler registration FAILED");
     }
 
+    httpd_uri_t wifi_scan = {
+        .uri = "/wifi/scan",
+        .method = HTTP_POST,
+        .handler = wifi_scan_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &wifi_scan) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "WiFi scan handler registration FAILED");
+    }
+
+    httpd_uri_t wifi_connect = {
+        .uri = "/wifi/connect",
+        .method = HTTP_POST,
+        .handler = wifi_connect_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &wifi_connect) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "WiFi connect handler registration FAILED");
+    }
+
+    httpd_uri_t hotspot_settings = {
+        .uri = "/hotspot/settings",
+        .method = HTTP_POST,
+        .handler = hotspot_settings_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &hotspot_settings) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Hotspot settings handler registration FAILED");
+    }
+
+    httpd_uri_t system_reboot = {
+        .uri = "/system/reboot",
+        .method = HTTP_POST,
+        .handler = system_reboot_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &system_reboot) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "System reboot handler registration FAILED");
+    }
+
     running = true;
     ESP_LOGI(TAG, "Web server started on port %d", port);
-    ESP_LOGI(TAG, "Registered endpoints: /, /ws, /generate_204, /hotspot-detect.html, /scan, /set_mac, /get_stored_mac, /connect, /disconnect, /settings/get, /settings/save, /settings/reset");
+    ESP_LOGI(TAG, "Registered endpoints: /, /ws, /generate_204, /hotspot-detect.html, /scan, /set_mac, /get_stored_mac, /connect, /disconnect, /settings/get, /settings/save, /settings/reset, /wifi/scan, /wifi/connect, /hotspot/settings, /system/reboot");
     return true;
 }
 
@@ -2221,11 +2527,35 @@ esp_err_t WebServer::settings_get_handler(httpd_req_t *req)
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
     bool ha_mqtt_enabled = true; // Default: enabled
+    char mqtt_broker[128] = {0};
+    char mqtt_username[64] = {0};
+    char mqtt_password[64] = {0};
+    
     if (err == ESP_OK)
     {
         uint8_t ha_mqtt_u8 = 1;
         nvs_get_u8(nvs_handle, "ha_mqtt_enabled", &ha_mqtt_u8);
         ha_mqtt_enabled = (ha_mqtt_u8 != 0);
+        
+        size_t required_size;
+        err = nvs_get_str(nvs_handle, "mqtt_broker", NULL, &required_size);
+        if (err == ESP_OK && required_size <= sizeof(mqtt_broker))
+        {
+            nvs_get_str(nvs_handle, "mqtt_broker", mqtt_broker, &required_size);
+        }
+        
+        err = nvs_get_str(nvs_handle, "mqtt_username", NULL, &required_size);
+        if (err == ESP_OK && required_size <= sizeof(mqtt_username))
+        {
+            nvs_get_str(nvs_handle, "mqtt_username", mqtt_username, &required_size);
+        }
+        
+        err = nvs_get_str(nvs_handle, "mqtt_password", NULL, &required_size);
+        if (err == ESP_OK && required_size <= sizeof(mqtt_password))
+        {
+            nvs_get_str(nvs_handle, "mqtt_password", mqtt_password, &required_size);
+        }
+        
         nvs_close(nvs_handle);
     }
 
@@ -2238,8 +2568,12 @@ esp_err_t WebServer::settings_get_handler(httpd_req_t *req)
                            i < 72 ? "," : "");
     }
 
-    offset += snprintf(buffer + offset, buffer_size - offset, "], \"ha_mqtt_enabled\": %s}",
-                       ha_mqtt_enabled ? "true" : "false");
+    offset += snprintf(buffer + offset, buffer_size - offset, 
+                       "], \"ha_mqtt_enabled\": %s, \"mqtt_broker\": \"%s\", \"mqtt_username\": \"%s\", \"mqtt_password\": \"%s\"}",
+                       ha_mqtt_enabled ? "true" : "false",
+                       mqtt_broker,
+                       mqtt_username,
+                       mqtt_password);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buffer);
@@ -2341,6 +2675,102 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
             nvs_commit(nvs_handle);
             nvs_close(nvs_handle);
             ESP_LOGI(TAG, "HA MQTT enabled setting saved: %d (restart required)", enabled);
+        }
+    }
+
+    // Parse MQTT broker URI
+    char *mqtt_broker_ptr = strstr(buffer, "\"mqtt_broker\":");
+    if (mqtt_broker_ptr)
+    {
+        mqtt_broker_ptr += strlen("\"mqtt_broker\":");
+        while (*mqtt_broker_ptr == ' ')
+            mqtt_broker_ptr++;
+        if (*mqtt_broker_ptr == '\"')
+        {
+            mqtt_broker_ptr++;
+            char *end_quote = strchr(mqtt_broker_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - mqtt_broker_ptr;
+                char mqtt_broker[128] = {0};
+                if (len < sizeof(mqtt_broker))
+                {
+                    strncpy(mqtt_broker, mqtt_broker_ptr, len);
+                    nvs_handle_t nvs_handle;
+                    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+                    if (err == ESP_OK)
+                    {
+                        nvs_set_str(nvs_handle, "mqtt_broker", mqtt_broker);
+                        nvs_commit(nvs_handle);
+                        nvs_close(nvs_handle);
+                        ESP_LOGI(TAG, "MQTT broker saved: %s", mqtt_broker);
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse MQTT username
+    char *mqtt_username_ptr = strstr(buffer, "\"mqtt_username\":");
+    if (mqtt_username_ptr)
+    {
+        mqtt_username_ptr += strlen("\"mqtt_username\":");
+        while (*mqtt_username_ptr == ' ')
+            mqtt_username_ptr++;
+        if (*mqtt_username_ptr == '\"')
+        {
+            mqtt_username_ptr++;
+            char *end_quote = strchr(mqtt_username_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - mqtt_username_ptr;
+                char mqtt_username[64] = {0};
+                if (len < sizeof(mqtt_username))
+                {
+                    strncpy(mqtt_username, mqtt_username_ptr, len);
+                    nvs_handle_t nvs_handle;
+                    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+                    if (err == ESP_OK)
+                    {
+                        nvs_set_str(nvs_handle, "mqtt_username", mqtt_username);
+                        nvs_commit(nvs_handle);
+                        nvs_close(nvs_handle);
+                        ESP_LOGI(TAG, "MQTT username saved");
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse MQTT password
+    char *mqtt_password_ptr = strstr(buffer, "\"mqtt_password\":");
+    if (mqtt_password_ptr)
+    {
+        mqtt_password_ptr += strlen("\"mqtt_password\":");
+        while (*mqtt_password_ptr == ' ')
+            mqtt_password_ptr++;
+        if (*mqtt_password_ptr == '\"')
+        {
+            mqtt_password_ptr++;
+            char *end_quote = strchr(mqtt_password_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - mqtt_password_ptr;
+                char mqtt_password[64] = {0};
+                if (len < sizeof(mqtt_password))
+                {
+                    strncpy(mqtt_password, mqtt_password_ptr, len);
+                    nvs_handle_t nvs_handle;
+                    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+                    if (err == ESP_OK)
+                    {
+                        nvs_set_str(nvs_handle, "mqtt_password", mqtt_password);
+                        nvs_commit(nvs_handle);
+                        nvs_close(nvs_handle);
+                        ESP_LOGI(TAG, "MQTT password saved");
+                    }
+                }
+            }
         }
     }
 
@@ -2470,3 +2900,229 @@ esp_err_t WebServer::settings_reset_handler(httpd_req_t *req)
     return ESP_OK;
 #endif
 }
+
+esp_err_t WebServer::wifi_scan_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "wifi_scan_handler called!");
+    
+    // TODO: Implement actual WiFi scanning using ESP-IDF WiFi APIs
+    // For now, return a placeholder response
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"success\":true,\"networks\":[]}");
+    
+    ESP_LOGI(TAG, "WiFi scan not yet implemented - returning empty list");
+    return ESP_OK;
+}
+
+esp_err_t WebServer::wifi_connect_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "wifi_connect_handler called!");
+    
+    // Read the POST body
+    int content_len = req->content_len;
+    char *buffer = (char *)malloc(content_len + 1);
+    if (!buffer)
+    {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Allocation failed");
+        return ESP_FAIL;
+    }
+
+    int read_len = httpd_req_recv(req, buffer, content_len);
+    if (read_len != content_len)
+    {
+        free(buffer);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read request body");
+        return ESP_FAIL;
+    }
+
+    buffer[content_len] = 0;
+    ESP_LOGI(TAG, "Received WiFi connect request: %s", buffer);
+    
+    // Parse SSID and password
+    char ssid[32] = {0};
+    char password[64] = {0};
+    
+    char *ssid_ptr = strstr(buffer, "\"ssid\":");
+    if (ssid_ptr)
+    {
+        ssid_ptr += strlen("\"ssid\":");
+        while (*ssid_ptr == ' ')
+            ssid_ptr++;
+        if (*ssid_ptr == '\"')
+        {
+            ssid_ptr++;
+            char *end_quote = strchr(ssid_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - ssid_ptr;
+                if (len < sizeof(ssid))
+                {
+                    strncpy(ssid, ssid_ptr, len);
+                }
+            }
+        }
+    }
+    
+    char *password_ptr = strstr(buffer, "\"password\":");
+    if (password_ptr)
+    {
+        password_ptr += strlen("\"password\":");
+        while (*password_ptr == ' ')
+            password_ptr++;
+        if (*password_ptr == '\"')
+        {
+            password_ptr++;
+            char *end_quote = strchr(password_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - password_ptr;
+                if (len < sizeof(password))
+                {
+                    strncpy(password, password_ptr, len);
+                }
+            }
+        }
+    }
+    
+    // Save WiFi credentials to NVS
+    if (strlen(ssid) > 0)
+    {
+        nvs_handle_t nvs_handle;
+        esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+        if (err == ESP_OK)
+        {
+            nvs_set_str(nvs_handle, "wifi_ssid", ssid);
+            nvs_set_str(nvs_handle, "wifi_password", password);
+            nvs_commit(nvs_handle);
+            nvs_close(nvs_handle);
+            ESP_LOGI(TAG, "WiFi credentials saved to NVS: SSID=%s", ssid);
+        }
+    }
+    
+    // TODO: Actually connect to WiFi using ESP-IDF WiFi APIs
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"WiFi credentials saved. Restart to connect.\"}");
+    
+    free(buffer);
+    return ESP_OK;
+}
+
+esp_err_t WebServer::hotspot_settings_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "hotspot_settings_handler called!");
+    
+    // Read the POST body
+    int content_len = req->content_len;
+    char *buffer = (char *)malloc(content_len + 1);
+    if (!buffer)
+    {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Allocation failed");
+        return ESP_FAIL;
+    }
+
+    int read_len = httpd_req_recv(req, buffer, content_len);
+    if (read_len != content_len)
+    {
+        free(buffer);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read request body");
+        return ESP_FAIL;
+    }
+
+    buffer[content_len] = 0;
+    ESP_LOGI(TAG, "Received hotspot settings: %s", buffer);
+    
+    // Parse settings
+    bool enabled = (strstr(buffer, "\"enabled\":true") != NULL);
+    char ssid[32] = {0};
+    char password[64] = {0};
+    int channel = 1;
+    
+    char *ssid_ptr = strstr(buffer, "\"ssid\":");
+    if (ssid_ptr)
+    {
+        ssid_ptr += strlen("\"ssid\":");
+        while (*ssid_ptr == ' ')
+            ssid_ptr++;
+        if (*ssid_ptr == '\"')
+        {
+            ssid_ptr++;
+            char *end_quote = strchr(ssid_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - ssid_ptr;
+                if (len < sizeof(ssid))
+                {
+                    strncpy(ssid, ssid_ptr, len);
+                }
+            }
+        }
+    }
+    
+    char *password_ptr = strstr(buffer, "\"password\":");
+    if (password_ptr)
+    {
+        password_ptr += strlen("\"password\":");
+        while (*password_ptr == ' ')
+            password_ptr++;
+        if (*password_ptr == '\"')
+        {
+            password_ptr++;
+            char *end_quote = strchr(password_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - password_ptr;
+                if (len < sizeof(password))
+                {
+                    strncpy(password, password_ptr, len);
+                }
+            }
+        }
+    }
+    
+    char *channel_ptr = strstr(buffer, "\"channel\":");
+    if (channel_ptr)
+    {
+        sscanf(channel_ptr, "\"channel\":%d", &channel);
+    }
+    
+    // Save hotspot settings to NVS
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK)
+    {
+        nvs_set_u8(nvs_handle, "hotspot_enabled", enabled ? 1 : 0);
+        if (strlen(ssid) > 0)
+        {
+            nvs_set_str(nvs_handle, "hotspot_ssid", ssid);
+        }
+        if (strlen(password) > 0)
+        {
+            nvs_set_str(nvs_handle, "hotspot_password", password);
+        }
+        nvs_set_u8(nvs_handle, "hotspot_channel", (uint8_t)channel);
+        nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
+        ESP_LOGI(TAG, "Hotspot settings saved: enabled=%d, SSID=%s, channel=%d", enabled, ssid, channel);
+    }
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"Hotspot settings saved. Restart to apply.\"}");
+    
+    free(buffer);
+    return ESP_OK;
+}
+
+esp_err_t WebServer::system_reboot_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "system_reboot_handler called! Rebooting in 2 seconds...");
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"Rebooting device...\"}");
+    
+    // Schedule reboot after a short delay to allow response to be sent
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    esp_restart();
+    
+    return ESP_OK;
+}
+

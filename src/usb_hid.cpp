@@ -444,6 +444,13 @@ void USBHIDManager::updateGamepadFromGesture(float delta_x, float delta_y)
         return;
 
     float scale = settings.gamepad_sensitivity;
+
+    // Apply invert Y-axis setting
+    if (settings.gamepad_invert_y)
+    {
+        delta_y = -delta_y;
+    }
+
     int16_t temp_x = (int16_t)(delta_x * scale);
     int16_t temp_y = (int16_t)(delta_y * scale);
 
@@ -718,7 +725,8 @@ uint8_t USBHIDManager::getKeycodeForSpell(const char *spell_name)
 void USBHIDManager::sendSpellKeyboardForSpell(const char *spell_name)
 {
 #if USE_USB_HID_DEVICE
-    if (!spell_name || getHidMode() != HID_MODE_KEYBOARD)
+    // Allow keyboard spell triggers in both Mouse and Keyboard modes
+    if (!spell_name || (getHidMode() != HID_MODE_KEYBOARD && getHidMode() != HID_MODE_MOUSE))
         return;
 
     uint8_t keycode = getSpellKeycode(spell_name);

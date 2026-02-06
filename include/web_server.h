@@ -59,14 +59,18 @@ private:
     static esp_err_t ws_handler(httpd_req_t *req);   // WebSocket handler
     static esp_err_t data_handler(httpd_req_t *req); // Polling endpoint
     static esp_err_t captive_portal_handler(httpd_req_t *req);
-    static esp_err_t scan_handler(httpd_req_t *req);           // Start BLE scan
-    static esp_err_t set_mac_handler(httpd_req_t *req);        // Set wand MAC address
-    static esp_err_t get_stored_mac_handler(httpd_req_t *req); // Get stored MAC address
-    static esp_err_t connect_handler(httpd_req_t *req);        // Connect to stored wand
-    static esp_err_t disconnect_handler(httpd_req_t *req);     // Disconnect from wand
-    static esp_err_t settings_get_handler(httpd_req_t *req);   // Get USB HID settings
-    static esp_err_t settings_save_handler(httpd_req_t *req);  // Save USB HID settings
-    static esp_err_t settings_reset_handler(httpd_req_t *req); // Reset USB HID settings
+    static esp_err_t scan_handler(httpd_req_t *req);             // Start BLE scan
+    static esp_err_t set_mac_handler(httpd_req_t *req);          // Set wand MAC address
+    static esp_err_t get_stored_mac_handler(httpd_req_t *req);   // Get stored MAC address
+    static esp_err_t connect_handler(httpd_req_t *req);          // Connect to stored wand
+    static esp_err_t disconnect_handler(httpd_req_t *req);       // Disconnect from wand
+    static esp_err_t settings_get_handler(httpd_req_t *req);     // Get USB HID settings
+    static esp_err_t settings_save_handler(httpd_req_t *req);    // Save USB HID settings
+    static esp_err_t settings_reset_handler(httpd_req_t *req);   // Reset USB HID settings
+    static esp_err_t wifi_scan_handler(httpd_req_t *req);        // Scan WiFi networks
+    static esp_err_t wifi_connect_handler(httpd_req_t *req);     // Connect to WiFi
+    static esp_err_t hotspot_settings_handler(httpd_req_t *req); // Save hotspot settings
+    static esp_err_t system_reboot_handler(httpd_req_t *req);    // Reboot device
 
     void addWebSocketClient(int fd);
     void removeWebSocketClient(int fd);
