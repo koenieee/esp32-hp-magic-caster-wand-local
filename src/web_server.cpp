@@ -275,6 +275,52 @@ static const char index_html[] = R"rawliteral(
                 width: 100%;
             }
         }
+        /* Toast notification styles */
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #333;
+            color: #fff;
+            padding: 16px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 1em;
+            z-index: 10000;
+            animation: slideIn 0.3s ease-out, slideOut 0.3s ease-in 2.7s;
+            opacity: 0;
+        }
+        .toast.success {
+            background: #2d5016;
+            border-left: 4px solid #4CAF50;
+        }
+        .toast.error {
+            background: #5a1a1a;
+            border-left: 4px solid #f44336;
+        }
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        @keyframes slideOut {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+        }
     </style>
 </head>
 <body>
@@ -879,7 +925,7 @@ static const char index_html[] = R"rawliteral(
         
         function connectWand() {
             if (!selectedMac) {
-                alert('Please select a wand first');
+                showToast('Please select a wand first', 'error');
                 return;
             }
             
@@ -1237,11 +1283,11 @@ static const char index_html[] = R"rawliteral(
             })
             .then(response => response.json())
             .then(data => {
-                alert('✓ Settings saved successfully!');
+                showToast('Settings saved successfully!', 'success');
                 console.log('Settings saved:', data);
             })
             .catch(error => {
-                alert('✗ Failed to save settings');
+                showToast('Failed to save settings', 'error');
                 console.error('Save error:', error);
             });
         }
@@ -1279,10 +1325,10 @@ static const char index_html[] = R"rawliteral(
                             }
                         }
                     }
-                    alert('✓ Settings loaded from device');
+                    showToast('Settings loaded from device', 'success');
                 })
                 .catch(error => {
-                    alert('✗ Failed to load settings');
+                    showToast('Failed to load settings', 'error');
                     console.error('Load error:', error);
                 });
         }
@@ -1309,10 +1355,10 @@ static const char index_html[] = R"rawliteral(
                         document.getElementById('gamepad-deadzone').value = 0.05;
                         document.getElementById('gpad-deadzone-value').textContent = '0.05';
                         document.getElementById('invert-gamepad-y').checked = true;
-                        alert('✓ Settings reset to defaults!');
+                        showToast('Settings reset to defaults!', 'success');
                     })
                     .catch(error => {
-                        alert('✗ Failed to reset settings');
+                        showToast('Failed to reset settings', 'error');
                         console.error('Reset error:', error);
                     });
             }

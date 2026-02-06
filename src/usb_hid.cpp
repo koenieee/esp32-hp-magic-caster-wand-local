@@ -430,12 +430,6 @@ void USBHIDManager::updateMouseFromGesture(float delta_x, float delta_y)
     int8_t dy = (temp_y > 127) ? 127 : (temp_y < -127) ? -127
                                                        : (int8_t)temp_y;
 
-    // Apply mouse Y inversion if enabled
-    if (settings.invert_mouse_y)
-    {
-        dy = -dy;
-    }
-
     if (dx != 0 || dy != 0)
     {
         sendMouseReport(dx, dy, 0, button_state);
@@ -450,9 +444,8 @@ void USBHIDManager::updateGamepadFromGesture(float delta_x, float delta_y)
         return;
 
     float scale = settings.gamepad_sensitivity;
-    float dy = settings.gamepad_invert_y ? -delta_y : delta_y;
     int16_t temp_x = (int16_t)(delta_x * scale);
-    int16_t temp_y = (int16_t)(dy * scale);
+    int16_t temp_y = (int16_t)(delta_y * scale);
 
     gamepad_lx = (temp_x > 127) ? 127 : (temp_x < -127) ? -127
                                                         : (int8_t)temp_x;

@@ -1001,9 +1001,14 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                 float dx = pos.x - last_mouse_pos.x;
                 float dy = pos.y - last_mouse_pos.y;
 #if USE_USB_HID_DEVICE
-                if (usbHID.getHidMode() == HID_MODE_MOUSE)
+                HIDMode current_mode = usbHID.getHidMode();
+                if (current_mode == HID_MODE_MOUSE)
                 {
                     dy = usbHID.getInvertMouseY() ? -dy : dy;
+                }
+                else if (current_mode == HID_MODE_GAMEPAD)
+                {
+                    dy = usbHID.getGamepadInvertY() ? -dy : dy;
                 }
 #else
                 dy = -dy; // Default: inverted
@@ -1055,9 +1060,14 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                     float dx = pos.x - last_mouse_pos.x;
                     float dy = pos.y - last_mouse_pos.y;
 #if USE_USB_HID_DEVICE
-                    if (usbHID.getHidMode() == HID_MODE_MOUSE)
+                    HIDMode current_mode = usbHID.getHidMode();
+                    if (current_mode == HID_MODE_MOUSE)
                     {
                         dy = usbHID.getInvertMouseY() ? -dy : dy;
+                    }
+                    else if (current_mode == HID_MODE_GAMEPAD)
+                    {
+                        dy = usbHID.getGamepadInvertY() ? -dy : dy;
                     }
 #else
                     dy = -dy; // Default: inverted
