@@ -13,6 +13,7 @@
 #include "esp_netif.h"
 #include "lwip/ip4_addr.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "driver/gpio.h"
 #include "ble_client.h"
 #include "config.h"
@@ -252,7 +253,7 @@ void onIMUData(float ax, float ay, float az, float gx, float gy, float gz)
 extern "C" void app_main()
 {
     // Wait 3 seconds for serial monitor to connect and catch all startup logs
-    vTaskDelay(3000 / portTICK_PERIOD_MS);
+    vTaskDelay(30000 / portTICK_PERIOD_MS);
 
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "================================================");
@@ -459,16 +460,35 @@ extern "C" void app_main()
             ESP_LOGI(TAG, "Waiting for WiFi connection...");
             vTaskDelay(5000 / portTICK_PERIOD_MS);
 
-            // Initialize MQTT client for Home Assistant
-            char mqtt_uri[128];
-            snprintf(mqtt_uri, sizeof(mqtt_uri), "mqtt://%s:%d", MQTT_SERVER, MQTT_PORT);
-            if (mqttClient.begin(mqtt_uri, MQTT_USER, MQTT_PASSWORD))
+            // Check if MQTT is enabled in NVS settings
+            bool ha_mqtt_enabled = true; // Default: enabled
+            nvs_handle_t nvs_handle;
+            esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+            if (err == ESP_OK)
             {
-                ESP_LOGI(TAG, "✓ MQTT client initialized for Home Assistant");
+                uint8_t ha_mqtt_u8 = 1;
+                nvs_get_u8(nvs_handle, "ha_mqtt_enabled", &ha_mqtt_u8);
+                ha_mqtt_enabled = (ha_mqtt_u8 != 0);
+                nvs_close(nvs_handle);
+            }
+
+            if (ha_mqtt_enabled)
+            {
+                // Initialize MQTT client for Home Assistant
+                char mqtt_uri[128];
+                snprintf(mqtt_uri, sizeof(mqtt_uri), "mqtt://%s:%d", MQTT_SERVER, MQTT_PORT);
+                if (mqttClient.begin(mqtt_uri, MQTT_USER, MQTT_PASSWORD))
+                {
+                    ESP_LOGI(TAG, "✓ MQTT client initialized for Home Assistant");
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "MQTT connection failed - continuing without Home Assistant");
+                }
             }
             else
             {
-                ESP_LOGW(TAG, "MQTT connection failed - continuing without Home Assistant");
+                ESP_LOGI(TAG, "Home Assistant MQTT disabled (configure via web interface)");
             }
         }
         else

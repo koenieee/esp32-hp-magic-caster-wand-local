@@ -837,6 +837,13 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
     bool enoughButtonsPressed = (buttonsPressed >= BUTTON_MIN_FOR_TRACKING);
     bool wasEnoughPressed = (__builtin_popcount(lastButtonState & 0x0F) >= BUTTON_MIN_FOR_TRACKING);
 
+#if USE_USB_HID_DEVICE
+    if (usbHID.getHidMode() != HID_MODE_GAMEPAD)
+    {
+        usbHID.setGamepadButtons(buttonState & 0x0F);
+    }
+#endif
+
     if (buttonState != lastButtonState)
     {
         bool b1 = buttonState & 0x01, b2 = buttonState & 0x02,
@@ -900,6 +907,7 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
                         // Send mapped keyboard key for detected spell
 #if USE_USB_HID_DEVICE
                         usbHID.sendSpellKeyboardForSpell(spell_name);
+                        usbHID.sendSpellGamepadForSpell(spell_name);
 #endif
                     }
                     else if (!spell_name)
@@ -991,7 +999,15 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
             else
             {
                 float dx = pos.x - last_mouse_pos.x;
-                float dy = -(pos.y - last_mouse_pos.y);
+                float dy = pos.y - last_mouse_pos.y;
+#if USE_USB_HID_DEVICE
+                if (usbHID.getHidMode() == HID_MODE_MOUSE)
+                {
+                    dy = usbHID.getInvertMouseY() ? -dy : dy;
+                }
+#else
+                dy = -dy; // Default: inverted
+#endif
                 accum_dx += dx;
                 accum_dy += dy;
                 last_mouse_pos = pos;
@@ -1000,7 +1016,15 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                 if (++mouse_counter >= 4)
                 {
 #if USE_USB_HID_DEVICE
-                    usbHID.updateMouseFromGesture(accum_dx, accum_dy);
+                    HIDMode hid_mode = usbHID.getHidMode();
+                    if (hid_mode == HID_MODE_GAMEPAD)
+                    {
+                        usbHID.updateGamepadFromGesture(accum_dx, accum_dy);
+                    }
+                    else if (hid_mode == HID_MODE_MOUSE)
+                    {
+                        usbHID.updateMouseFromGesture(accum_dx, accum_dy);
+                    }
 #endif
                     accum_dx = 0.0f;
                     accum_dy = 0.0f;
@@ -1029,7 +1053,15 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                 else
                 {
                     float dx = pos.x - last_mouse_pos.x;
-                    float dy = -(pos.y - last_mouse_pos.y);
+                    float dy = pos.y - last_mouse_pos.y;
+#if USE_USB_HID_DEVICE
+                    if (usbHID.getHidMode() == HID_MODE_MOUSE)
+                    {
+                        dy = usbHID.getInvertMouseY() ? -dy : dy;
+                    }
+#else
+                    dy = -dy; // Default: inverted
+#endif
                     accum_dx += dx;
                     accum_dy += dy;
                     last_mouse_pos = pos;
@@ -1038,7 +1070,15 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                     if (new_count == 2 || ++mouse_counter >= 4)
                     {
 #if USE_USB_HID_DEVICE
-                        usbHID.updateMouseFromGesture(accum_dx, accum_dy);
+                        HIDMode hid_mode = usbHID.getHidMode();
+                        if (hid_mode == HID_MODE_GAMEPAD)
+                        {
+                            usbHID.updateGamepadFromGesture(accum_dx, accum_dy);
+                        }
+                        else if (hid_mode == HID_MODE_MOUSE)
+                        {
+                            usbHID.updateMouseFromGesture(accum_dx, accum_dy);
+                        }
 #endif
                         accum_dx = 0.0f;
                         accum_dy = 0.0f;

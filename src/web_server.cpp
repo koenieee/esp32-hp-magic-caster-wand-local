@@ -313,6 +313,13 @@ static const char index_html[] = R"rawliteral(
                             <!-- Spell mappings will be populated by JavaScript -->
                         </div>
                     </div>
+                    <h4 style="margin: 20px 0 10px 0; color: #4CAF50;">Spell Mappings (Gamepad Buttons)</h4>
+                    <input type="text" id="gamepad-spell-filter" class="spell-mapping-search" placeholder="Filter spells..." oninput="filterGamepadMappings()">
+                    <div class="spell-mappings-container">
+                        <div id="gamepad-mappings" class="spell-mappings-grid">
+                            <!-- Gamepad mappings will be populated by JavaScript -->
+                        </div>
+                    </div>
                 </div>
                 <div>
                     <h4 style="margin: 0 0 10px 0; color: #4CAF50;">Mouse Settings</h4>
@@ -324,6 +331,52 @@ static const char index_html[] = R"rawliteral(
                                 <span id="sens-value" style="width: 40px; text-align: right;">1.0x</span>
                             </div>
                             <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Lower = less movement, Higher = more movement</div>
+                        </div>
+                        <div style="margin: 10px 0;">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="invert-mouse-y" style="width: 18px; height: 18px;">
+                                <span>Invert Y-Axis (wand up = cursor up)</span>
+                            </label>
+                            <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Checked = inverted (typical), Unchecked = natural</div>
+                        </div>
+                        <div style="margin: 10px 0; border-top: 1px solid #444; padding-top: 10px;">
+                            <label style="display: block; margin-bottom: 5px;">HID Mode:</label>
+                            <select id="hid-mode" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                                <option value="0">Mouse</option>
+                                <option value="1">Keyboard</option>
+                                <option value="2">Gamepad</option>
+                                <option value="3">Disabled</option>
+                            </select>
+                            <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Only one mode can be active at a time</div>
+                        </div>
+                        <div style="margin: 10px 0; border-top: 1px solid #444; padding-top: 10px;">
+                            <label style="display: block; margin-bottom: 5px;">Gamepad Sensitivity:</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <input type="range" id="gamepad-sensitivity" min="0.1" max="5.0" step="0.1" value="1.0" style="flex-grow: 1;">
+                                <span id="gpad-sens-value" style="width: 40px; text-align: right;">1.0x</span>
+                            </div>
+                        </div>
+                        <div style="margin: 10px 0;">
+                            <label style="display: block; margin-bottom: 5px;">Gamepad Dead Zone:</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <input type="range" id="gamepad-deadzone" min="0.0" max="0.5" step="0.01" value="0.05" style="flex-grow: 1;">
+                                <span id="gpad-deadzone-value" style="width: 50px; text-align: right;">0.05</span>
+                            </div>
+                        </div>
+                        <div style="margin: 10px 0;">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="invert-gamepad-y" style="width: 18px; height: 18px;">
+                                <span>Invert Gamepad Y-Axis</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div style="background: #222; padding: 10px; border-radius: 5px; margin-top: 10px;">
+                        <div style="margin: 10px 0;">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="ha-mqtt-enabled" style="width: 18px; height: 18px;">
+                                <span>Home Assistant MQTT Enabled</span>
+                            </label>
+                            <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Restart required for this change to take effect</div>
                         </div>
                     </div>
                 </div>
@@ -1027,6 +1080,20 @@ static const char index_html[] = R"rawliteral(
             { group: 'Function', label: 'F24', value: 0x73 }
         ];
 
+        const GAMEPAD_BUTTON_OPTIONS = [
+            { label: 'Disabled', value: 0 },
+            { label: 'Button 1', value: 1 },
+            { label: 'Button 2', value: 2 },
+            { label: 'Button 3', value: 3 },
+            { label: 'Button 4', value: 4 },
+            { label: 'Button 5', value: 5 },
+            { label: 'Button 6', value: 6 },
+            { label: 'Button 7', value: 7 },
+            { label: 'Button 8', value: 8 },
+            { label: 'Button 9', value: 9 },
+            { label: 'Button 10', value: 10 }
+        ];
+
         function buildKeySelectOptions(select) {
             const groups = new Map();
             KEY_OPTIONS.forEach((opt) => {
@@ -1041,6 +1108,15 @@ static const char index_html[] = R"rawliteral(
                 groups.get(opt.group).appendChild(option);
             });
             groups.forEach((optgroup) => select.appendChild(optgroup));
+        }
+
+        function buildGamepadSelectOptions(select) {
+            GAMEPAD_BUTTON_OPTIONS.forEach((opt) => {
+                const option = document.createElement('option');
+                option.value = opt.value;
+                option.textContent = opt.label;
+                select.appendChild(option);
+            });
         }
 
         // Populate spell mapping dropdowns
@@ -1067,10 +1143,43 @@ static const char index_html[] = R"rawliteral(
             }
         }
 
+        function populateGamepadMappings() {
+            const container = document.getElementById('gamepad-mappings');
+            container.innerHTML = '';
+
+            for (let i = 0; i < SPELL_NAMES.length; i++) {
+                const spell = SPELL_NAMES[i];
+                const select = document.createElement('select');
+                select.id = `gpad_spell_${i}`;
+                buildGamepadSelectOptions(select);
+
+                const label = document.createElement('label');
+                label.style.cssText = 'font-size: 12px; word-break: break-word;';
+                label.textContent = spell.replace(/_/g, ' ');
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'spell-mapping-item';
+                wrapper.dataset.spellName = spell.toLowerCase().replace(/_/g, ' ');
+                wrapper.appendChild(label);
+                wrapper.appendChild(select);
+                container.appendChild(wrapper);
+            }
+        }
+
         function filterSpellMappings() {
             const input = document.getElementById('spell-filter');
             const filter = input.value.trim().toLowerCase();
-            const items = document.querySelectorAll('.spell-mapping-item');
+            const items = document.querySelectorAll('#spell-mappings .spell-mapping-item');
+            items.forEach((item) => {
+                const name = item.dataset.spellName || '';
+                item.style.display = name.includes(filter) ? 'flex' : 'none';
+            });
+        }
+
+        function filterGamepadMappings() {
+            const input = document.getElementById('gamepad-spell-filter');
+            const filter = input.value.trim().toLowerCase();
+            const items = document.querySelectorAll('#gamepad-mappings .spell-mapping-item');
             items.forEach((item) => {
                 const name = item.dataset.spellName || '';
                 item.style.display = name.includes(filter) ? 'flex' : 'none';
@@ -1082,18 +1191,43 @@ static const char index_html[] = R"rawliteral(
             const value = parseFloat(e.target.value);
             document.getElementById('sens-value').textContent = value.toFixed(1) + 'x';
         });
+
+        // Gamepad sensitivity slider handler
+        document.getElementById('gamepad-sensitivity').addEventListener('input', (e) => {
+            const value = parseFloat(e.target.value);
+            document.getElementById('gpad-sens-value').textContent = value.toFixed(1) + 'x';
+        });
+
+        // Gamepad deadzone slider handler
+        document.getElementById('gamepad-deadzone').addEventListener('input', (e) => {
+            const value = parseFloat(e.target.value);
+            document.getElementById('gpad-deadzone-value').textContent = value.toFixed(2);
+        });
         
         // Load and save settings with spell mappings
         function saveSettings() {
             const settings = {
                 mouse_sensitivity: parseFloat(document.getElementById('mouse-sensitivity').value),
-                spells: []
+                invert_mouse_y: document.getElementById('invert-mouse-y').checked,
+                hid_mode: parseInt(document.getElementById('hid-mode').value),
+                gamepad_sensitivity: parseFloat(document.getElementById('gamepad-sensitivity').value),
+                gamepad_deadzone: parseFloat(document.getElementById('gamepad-deadzone').value),
+                gamepad_invert_y: document.getElementById('invert-gamepad-y').checked,
+                ha_mqtt_enabled: document.getElementById('ha-mqtt-enabled').checked,
+                spells: [],
+                gamepad_spells: []
             };
             
             // Collect all spell keycode mappings
             for (let i = 0; i < SPELL_NAMES.length; i++) {
                 const select = document.getElementById(`spell_${i}`);
                 settings.spells.push(parseInt(select.value));
+            }
+
+            // Collect all spell gamepad button mappings
+            for (let i = 0; i < SPELL_NAMES.length; i++) {
+                const select = document.getElementById(`gpad_spell_${i}`);
+                settings.gamepad_spells.push(parseInt(select.value));
             }
             
             fetch('/settings/save', {
@@ -1119,6 +1253,14 @@ static const char index_html[] = R"rawliteral(
                     console.log('Settings loaded:', data);
                     document.getElementById('mouse-sensitivity').value = data.mouse_sensitivity || 1.0;
                     document.getElementById('sens-value').textContent = (data.mouse_sensitivity || 1.0).toFixed(1) + 'x';
+                    document.getElementById('invert-mouse-y').checked = data.invert_mouse_y !== false;
+                    document.getElementById('hid-mode').value = (data.hid_mode !== undefined) ? data.hid_mode : 0;
+                    document.getElementById('gamepad-sensitivity').value = data.gamepad_sensitivity || 1.0;
+                    document.getElementById('gpad-sens-value').textContent = (data.gamepad_sensitivity || 1.0).toFixed(1) + 'x';
+                    document.getElementById('gamepad-deadzone').value = (data.gamepad_deadzone !== undefined) ? data.gamepad_deadzone : 0.05;
+                    document.getElementById('gpad-deadzone-value').textContent = ((data.gamepad_deadzone !== undefined) ? data.gamepad_deadzone : 0.05).toFixed(2);
+                    document.getElementById('invert-gamepad-y').checked = data.gamepad_invert_y !== false;
+                    document.getElementById('ha-mqtt-enabled').checked = data.ha_mqtt_enabled !== false;
                     
                     // Load spell keycodes
                     if (data.spells && data.spells.length === SPELL_NAMES.length) {
@@ -1126,6 +1268,14 @@ static const char index_html[] = R"rawliteral(
                             const select = document.getElementById(`spell_${i}`);
                             if (select) {
                                 select.value = data.spells[i];
+                            }
+                        }
+                    }
+                    if (data.gamepad_spells && data.gamepad_spells.length === SPELL_NAMES.length) {
+                        for (let i = 0; i < data.gamepad_spells.length; i++) {
+                            const select = document.getElementById(`gpad_spell_${i}`);
+                            if (select) {
+                                select.value = data.gamepad_spells[i];
                             }
                         }
                     }
@@ -1148,8 +1298,17 @@ static const char index_html[] = R"rawliteral(
                             const select = document.getElementById(`spell_${i}`);
                             if (select) select.value = 0;
                         }
+                        for (let i = 0; i < SPELL_NAMES.length; i++) {
+                            const select = document.getElementById(`gpad_spell_${i}`);
+                            if (select) select.value = 0;
+                        }
                         document.getElementById('mouse-sensitivity').value = 1.0;
                         document.getElementById('sens-value').textContent = '1.0x';
+                        document.getElementById('gamepad-sensitivity').value = 1.0;
+                        document.getElementById('gpad-sens-value').textContent = '1.0x';
+                        document.getElementById('gamepad-deadzone').value = 0.05;
+                        document.getElementById('gpad-deadzone-value').textContent = '0.05';
+                        document.getElementById('invert-gamepad-y').checked = true;
                         alert('✓ Settings reset to defaults!');
                     })
                     .catch(error => {
@@ -1161,6 +1320,7 @@ static const char index_html[] = R"rawliteral(
         
         // Initialize UI
         populateSpellMappings();
+        populateGamepadMappings();
         
         // Load settings on page load
         setTimeout(loadSettings, 2000);
@@ -1982,24 +2142,62 @@ esp_err_t WebServer::settings_get_handler(httpd_req_t *req)
 
     // Return mouse sensitivity and all 73 spell keycodes
 #if USE_USB_HID_DEVICE
-    char buffer[2048];
-    int offset = 0;
+    // Allocate buffer on heap to avoid stack overflow
+    char *buffer = (char *)malloc(4096);
+    if (!buffer)
+    {
+        ESP_LOGE(TAG, "Failed to allocate buffer for settings response");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory allocation failed");
+        return ESP_FAIL;
+    }
 
-    offset += snprintf(buffer + offset, sizeof(buffer) - offset, "{\"mouse_sensitivity\": %.2f, \"spells\": [",
-                       usbHID.getMouseSensitivity());
+    int offset = 0;
+    size_t buffer_size = 4096;
+
+    offset += snprintf(buffer + offset, buffer_size - offset,
+                       "{\"mouse_sensitivity\": %.2f, \"invert_mouse_y\": %s, \"hid_mode\": %u, \"gamepad_sensitivity\": %.2f, \"gamepad_deadzone\": %.2f, \"gamepad_invert_y\": %s, \"spells\": [",
+                       usbHID.getMouseSensitivity(),
+                       usbHID.getInvertMouseY() ? "true" : "false",
+                       static_cast<unsigned>(usbHID.getHidMode()),
+                       usbHID.getGamepadSensitivity(),
+                       usbHID.getGamepadDeadzone(),
+                       usbHID.getGamepadInvertY() ? "true" : "false");
 
     const uint8_t *spell_keycodes = usbHID.getSpellKeycodes();
     for (int i = 0; i < 73; i++)
     {
-        offset += snprintf(buffer + offset, sizeof(buffer) - offset, "%d%s",
+        offset += snprintf(buffer + offset, buffer_size - offset, "%d%s",
                            spell_keycodes[i],
                            i < 72 ? "," : "");
     }
 
-    offset += snprintf(buffer + offset, sizeof(buffer) - offset, "]}");
+    // Add HA MQTT setting
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    bool ha_mqtt_enabled = true; // Default: enabled
+    if (err == ESP_OK)
+    {
+        uint8_t ha_mqtt_u8 = 1;
+        nvs_get_u8(nvs_handle, "ha_mqtt_enabled", &ha_mqtt_u8);
+        ha_mqtt_enabled = (ha_mqtt_u8 != 0);
+        nvs_close(nvs_handle);
+    }
+
+    const uint8_t *gamepad_buttons = usbHID.getSpellGamepadButtons();
+    offset += snprintf(buffer + offset, buffer_size - offset, "], \"gamepad_spells\": [");
+    for (int i = 0; i < 73; i++)
+    {
+        offset += snprintf(buffer + offset, buffer_size - offset, "%d%s",
+                           gamepad_buttons[i],
+                           i < 72 ? "," : "");
+    }
+
+    offset += snprintf(buffer + offset, buffer_size - offset, "], \"ha_mqtt_enabled\": %s}",
+                       ha_mqtt_enabled ? "true" : "false");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buffer);
+    free(buffer);
 #else
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"status\":\"disabled\",\"message\":\"USB HID not enabled\"}");
@@ -2041,6 +2239,65 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
         usbHID.setMouseSensitivityValue(mouse_sens);
     }
 
+    // Parse invert_mouse_y
+    char *invert_ptr = strstr(buffer, "\"invert_mouse_y\"");
+    if (invert_ptr)
+    {
+        bool invert = (strstr(invert_ptr, "true") != NULL);
+        usbHID.setInvertMouseY(invert);
+    }
+
+    // Parse HID mode
+    char *hid_mode_ptr = strstr(buffer, "\"hid_mode\"");
+    if (hid_mode_ptr)
+    {
+        int hid_mode = HID_MODE_MOUSE;
+        sscanf(hid_mode_ptr, "\"hid_mode\": %d", &hid_mode);
+        usbHID.setHidMode(static_cast<HIDMode>(hid_mode));
+    }
+
+    // Parse gamepad sensitivity
+    char *gpad_sens_ptr = strstr(buffer, "\"gamepad_sensitivity\"");
+    if (gpad_sens_ptr)
+    {
+        float gpad_sens = 1.0f;
+        sscanf(gpad_sens_ptr, "\"gamepad_sensitivity\": %f", &gpad_sens);
+        usbHID.setGamepadSensitivityValue(gpad_sens);
+    }
+
+    // Parse gamepad deadzone
+    char *gpad_deadzone_ptr = strstr(buffer, "\"gamepad_deadzone\"");
+    if (gpad_deadzone_ptr)
+    {
+        float gpad_deadzone = 0.05f;
+        sscanf(gpad_deadzone_ptr, "\"gamepad_deadzone\": %f", &gpad_deadzone);
+        usbHID.setGamepadDeadzoneValue(gpad_deadzone);
+    }
+
+    // Parse gamepad invert_y
+    char *gpad_invert_ptr = strstr(buffer, "\"gamepad_invert_y\"");
+    if (gpad_invert_ptr)
+    {
+        bool invert = (strstr(gpad_invert_ptr, "true") != NULL);
+        usbHID.setGamepadInvertY(invert);
+    }
+
+    // Parse HA MQTT enabled
+    char *ha_mqtt_ptr = strstr(buffer, "\"ha_mqtt_enabled\"");
+    if (ha_mqtt_ptr)
+    {
+        bool enabled = (strstr(ha_mqtt_ptr, "true") != NULL);
+        nvs_handle_t nvs_handle;
+        esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+        if (err == ESP_OK)
+        {
+            nvs_set_u8(nvs_handle, "ha_mqtt_enabled", enabled ? 1 : 0);
+            nvs_commit(nvs_handle);
+            nvs_close(nvs_handle);
+            ESP_LOGI(TAG, "HA MQTT enabled setting saved: %d (restart required)", enabled);
+        }
+    }
+
     // Parse spell keycodes array
     char *spells_ptr = strstr(buffer, "\"spells\":");
     if (spells_ptr)
@@ -2077,6 +2334,44 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
                     }
                 }
                 ESP_LOGI(TAG, "Parsed %d spell keycodes", spell_idx);
+            }
+        }
+    }
+
+    // Parse gamepad spell button array
+    char *gpad_ptr = strstr(buffer, "\"gamepad_spells\":");
+    if (gpad_ptr)
+    {
+        gpad_ptr = strchr(gpad_ptr, '[');
+        if (gpad_ptr)
+        {
+            extern const char *SPELL_NAMES[73];
+            char *end_bracket = strchr(gpad_ptr, ']');
+            if (end_bracket)
+            {
+                int spell_idx = 0;
+                const char *parse_ptr = gpad_ptr + 1;
+
+                while (spell_idx < 73 && parse_ptr < end_bracket)
+                {
+                    int button = 0;
+                    int matched = sscanf(parse_ptr, "%d", &button);
+                    if (matched == 1)
+                    {
+                        usbHID.setSpellGamepadButton(SPELL_NAMES[spell_idx], (uint8_t)button);
+                        spell_idx++;
+                        parse_ptr = strchr(parse_ptr, ',');
+                        if (parse_ptr)
+                            parse_ptr++;
+                        else
+                            parse_ptr = end_bracket;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                ESP_LOGI(TAG, "Parsed %d gamepad spell mappings", spell_idx);
             }
         }
     }
