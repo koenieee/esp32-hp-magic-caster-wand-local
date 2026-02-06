@@ -1,8 +1,8 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-// USB HID Support - enabled for ESP32-S3 composite HID + CDC (logs)
-#define USE_USB_HID_DEVICE 1
+// USB HID Support - disabled to reduce interference with BLE/WiFi
+#define USE_USB_HID_DEVICE 0
 
 // Wand BLE UUIDs
 #define WAND_SERVICE_UUID "57420001-587e-48a0-974c-544d6163c577"

@@ -37,7 +37,12 @@ if [ -f "model.tflite" ]; then
     echo ""
 fi
 
-# Set target to ESP32-S3
+# Clean previous build to ensure fresh configuration
+echo "Cleaning previous build configuration..."
+#rm -rf build/
+#rm -f sdkconfig sdkconfig.old
+
+# Set target to ESP32-S3 (this will copy sdkconfig.esp32s3 to build/sdkconfig)
 echo "Setting target to ESP32-S3..."
 idf.py set-target esp32s3
 
@@ -49,7 +54,7 @@ export IDF_EXTRA_PARTITION_SUBTYPES=""
 # Build the project
 echo ""
 echo "Building firmware..."
-idf.py -D PARTITION_TABLE_FILENAME=partitions-s3.csv build
+idf.py build
 
 # Check if build succeeded
 if [ $? -ne 0 ]; then
@@ -69,12 +74,19 @@ echo ""
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo ""
     echo "Flashing firmware and SPIFFS partition..."
-    echo "(Using slower speed for VMware USB compatibility)"
     echo ""
+    echo "Put device in bootloader mode:"
+    echo "  1. Hold BOOT button (tiny button near USB)"
+    echo "  2. Press and release RESET button"
+    echo "  3. Release BOOT button"
+    echo ""
+    read -p "Press Enter when ready to flash..."
+    
+    echo "Waiting 3 seconds for device to enumerate..."
+    sleep 3
     
     # Flash everything: bootloader, partition table, app, and SPIFFS
-    # Use --no-stub and slower baud for VMware USB passthrough compatibility
-    idf.py -p "$PORT" -b 115200 flash --no-stub
+    idf.py -p "$PORT" -b 115200 flash
     
     # Flash SPIFFS partition with model if it exists
     if [ -f "data/model.tflite" ]; then

@@ -48,6 +48,7 @@ struct IMUSample;
 
 // Button state flags
 #define BUTTON_ALL_PRESSED 0x0F
+#define BUTTON_MIN_FOR_TRACKING 3 // Minimum buttons pressed to start tracking (3 out of 4)
 
 // Macro system opcodes
 #define MACRO_CONTROL 0x68

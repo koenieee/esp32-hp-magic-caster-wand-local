@@ -3,7 +3,7 @@
 # No filesystem needed - uses memory-mapped flash
 
 MODEL_FILE="data/model.tflite"
-PARTITION_OFFSET="0x310000"
+PARTITION_OFFSET="0x410000"
 SERIAL_PORT="${1:-/dev/ttyACM0}"
 
 if [ ! -f "$MODEL_FILE" ]; then

@@ -13,6 +13,7 @@
 #include "esp_netif.h"
 #include "lwip/ip4_addr.h"
 #include "nvs_flash.h"
+#include "driver/gpio.h"
 #include "ble_client.h"
 #include "config.h"
 #include "usb_hid.h"
@@ -20,6 +21,12 @@
 #include "ha_mqtt.h"
 
 static const char *TAG = "main";
+
+// Seeeduino XIAO ESP32S3 antenna switch GPIO
+// Some XIAO ESP32S3 use GPIO14, others GPIO3
+// Try GPIO14 first (most common for XIAO Sense), change to GPIO3 if needed
+#define ANTENNA_SWITCH_GPIO GPIO_NUM_14
+#define USE_EXTERNAL_ANTENNA 1 // Set to 1 for external antenna, 0 for internal
 
 // MAC address formatting macros (if not defined by esp_wifi)
 #ifndef MACSTR
@@ -244,8 +251,35 @@ void onIMUData(float ax, float ay, float az, float gx, float gy, float gz)
 
 extern "C" void app_main()
 {
-    vTaskDelay(100 / portTICK_PERIOD_MS); // Small delay to ensure logging is ready
-    ESP_LOGI(TAG, "app_main() starting...");
+    // Wait 3 seconds for serial monitor to connect and catch all startup logs
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
+
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "================================================");
+    ESP_LOGI(TAG, "  ESP32-S3 Magic Wand Gateway Starting...");
+    ESP_LOGI(TAG, "  Seeeduino XIAO ESP32S3");
+    ESP_LOGI(TAG, "================================================");
+    ESP_LOGI(TAG, "");
+
+    // Configure antenna switch for Seeeduino XIAO ESP32S3
+    ESP_LOGI(TAG, "Configuring RF antenna...");
+    gpio_config_t io_conf = {};
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pin_bit_mask = (1ULL << ANTENNA_SWITCH_GPIO);
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    gpio_config(&io_conf);
+
+#if USE_EXTERNAL_ANTENNA
+    gpio_set_level(ANTENNA_SWITCH_GPIO, 1); // HIGH = external U.FL antenna
+    ESP_LOGI(TAG, "✓ Using EXTERNAL antenna (U.FL connector on GPIO3)");
+    ESP_LOGI(TAG, "  Make sure antenna is properly attached!");
+#else
+    gpio_set_level(ANTENNA_SWITCH_GPIO, 0); // LOW = internal PCB antenna
+    ESP_LOGI(TAG, "✓ Using INTERNAL PCB antenna");
+#endif
+    ESP_LOGI(TAG, "");
 
     // Check PSRAM status early
     ESP_LOGI(TAG, "");
@@ -633,25 +667,37 @@ extern "C" void app_main()
     const uint32_t BATTERY_CHECK_INTERVAL = 100; // Check every 10 seconds (100 * 100ms)
     uint32_t keepalive_counter = 0;
     const uint32_t KEEPALIVE_INTERVAL = 30; // Send keep-alive every 3 seconds (30 * 100ms)
+    uint32_t reconnect_attempts = 0;
+    const uint32_t MAX_RECONNECT_ATTEMPTS = 3; // Try 3 times then pause
 
     while (1)
     {
         // Check connection status (only try to reconnect if we have a valid configured MAC)
         if (!wandClient.isConnected() && (mac_from_nvs || strcmp(WAND_MAC_ADDRESS, "C2:BD:5D:3C:67:4E") != 0))
         {
-            ESP_LOGW(TAG, "Connection lost, attempting reconnect...");
-            vTaskDelay(2000 / portTICK_PERIOD_MS);
+            // After 3 failed attempts, wait much longer to give WiFi priority
+            if (reconnect_attempts >= MAX_RECONNECT_ATTEMPTS)
+            {
+                ESP_LOGW(TAG, "Connection lost after %d attempts. Pausing reconnects for 5 minutes to prioritize WiFi...", MAX_RECONNECT_ATTEMPTS);
+                vTaskDelay(300000 / portTICK_PERIOD_MS); // Wait 5 minutes
+                reconnect_attempts = 0;                  // Reset counter
+            }
+
+            ESP_LOGW(TAG, "Connection lost, attempting reconnect... (attempt %d/%d)", reconnect_attempts + 1, MAX_RECONNECT_ATTEMPTS);
+            vTaskDelay(30000 / portTICK_PERIOD_MS); // Wait 30 seconds before reconnect attempt
 
             // Attempt to connect
             wandClient.connect(wand_mac);
+            reconnect_attempts++;
 
             // Wait for connection to establish
             ESP_LOGI(TAG, "Waiting for connection...");
-            vTaskDelay(5000 / portTICK_PERIOD_MS);
+            vTaskDelay(10000 / portTICK_PERIOD_MS); // Wait 10 seconds for connection
 
             // Check if connection succeeded
             if (wandClient.isConnected())
             {
+                reconnect_attempts = 0; // Reset on successful connection
                 ESP_LOGI(TAG, "Reconnected! Waiting for service discovery...");
                 vTaskDelay(5000 / portTICK_PERIOD_MS);
 
