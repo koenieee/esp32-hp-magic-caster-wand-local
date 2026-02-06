@@ -999,7 +999,9 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                 // Rate limit mouse updates to ~60 Hz (every 4th sample)
                 if (++mouse_counter >= 4)
                 {
+#if USE_USB_HID_DEVICE
                     usbHID.updateMouseFromGesture(accum_dx, accum_dy);
+#endif
                     accum_dx = 0.0f;
                     accum_dy = 0.0f;
                     mouse_counter = 0;
@@ -1019,18 +1021,18 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
             if (positions && new_count > 0)
             {
                 const Position2D &pos = positions[new_count - 1];
-                if (!has_last_pos)
+                if (!has_last_mouse_pos)
                 {
-                    last_pos = pos;
-                    has_last_pos = true;
+                    last_mouse_pos = pos;
+                    has_last_mouse_pos = true;
                 }
                 else
                 {
-                    float dx = pos.x - last_pos.x;
-                    float dy = -(pos.y - last_pos.y);
+                    float dx = pos.x - last_mouse_pos.x;
+                    float dy = -(pos.y - last_mouse_pos.y);
                     accum_dx += dx;
                     accum_dy += dy;
-                    last_pos = pos;
+                    last_mouse_pos = pos;
 
                     // Rate limit mouse updates to ~60 Hz (every 4th point)
                     if (new_count == 2 || ++mouse_counter >= 4)

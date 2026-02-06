@@ -3,3 +3,6 @@ venv/
 model.tflite
 data/*
 managed_components/
+
+# Custom configuration (not version controlled)
+include/config_custom.h
