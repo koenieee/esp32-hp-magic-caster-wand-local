@@ -5,7 +5,10 @@
 #include "usb_hid.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_wifi.h"
+#include "esp_spiffs.h"
 #include <string.h>
+#include <stdio.h>
 
 // Forward declaration from main.cpp
 #if USE_USB_HID_DEVICE
@@ -13,6 +16,49 @@ extern USBHIDManager usbHID;
 #endif
 
 static const char *TAG = "web_server";
+
+// Helper to sanitize strings for JSON output (removes non-printable and non-UTF-8 chars)
+static void sanitize_for_json(char *dest, const char *src, size_t max_len)
+{
+    if (!src || !dest || max_len == 0)
+    {
+        if (dest && max_len > 0)
+            dest[0] = '\0';
+        return;
+    }
+
+    size_t j = 0;
+    for (size_t i = 0; src[i] != '\0' && j < max_len - 1; i++)
+    {
+        unsigned char c = src[i];
+        // Allow printable ASCII and basic UTF-8 continuation bytes
+        // Skip control characters, NULL, and invalid UTF-8
+        if (c >= 32 && c < 127) // Printable ASCII
+        {
+            // Escape JSON special characters
+            if (c == '"' || c == '\\' || c == '/')
+            {
+                if (j + 1 < max_len - 1)
+                {
+                    dest[j++] = '\\';
+                    dest[j++] = c;
+                }
+            }
+            else
+            {
+                dest[j++] = c;
+            }
+        }
+        else if (c >= 128) // Potential UTF-8 multi-byte character
+        {
+            // Simple UTF-8 validation: just accept bytes >= 128 as-is
+            // for proper UTF-8 sequences (conservative approach)
+            dest[j++] = c;
+        }
+        // Skip control characters (0-31, 127)
+    }
+    dest[j] = '\0';
+}
 
 // Helper for broadcasting WebSocket messages with auto-disconnect detection
 static void broadcast_to_clients(httpd_handle_t server, int *clients, int *count,
@@ -321,6 +367,102 @@ static const char index_html[] = R"rawliteral(
                 opacity: 0;
             }
         }
+        /* Spell Learning Overlay */
+        .spell-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+            animation: fadeIn 0.3s ease-out;
+        }
+        .spell-overlay.active {
+            display: flex;
+        }
+        .spell-overlay-content {
+            position: relative;
+            max-width: 90%;
+            max-height: 90%;
+            animation: scaleIn 0.4s ease-out;
+        }
+        .spell-overlay img {
+            max-width: 100%;
+            max-height: 90vh;
+            border-radius: 10px;
+            box-shadow: 0 8px 32px rgba(255, 215, 0, 0.4);
+            border: 3px solid #FFD700;
+        }
+        .spell-overlay-title {
+            position: absolute;
+            top: -50px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 2em;
+            color: #FFD700;
+            font-weight: bold;
+            text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.8);
+            white-space: nowrap;
+        }
+        .spell-overlay-close {
+            position: absolute;
+            top: -40px;
+            right: 0;
+            background: #d32f2f;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1.2em;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+        .spell-overlay-close:hover {
+            background: #b71c1c;
+        }
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+            to {
+                opacity: 1;
+            }
+        }
+        @keyframes scaleIn {
+            from {
+                transform: scale(0.8);
+                opacity: 0;
+            }
+            to {
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+        .spell-learning-controls {
+            background: #333;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .spell-learning-controls select {
+            flex: 1;
+            min-width: 250px;
+            padding: 12px;
+            background: #222;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 5px;
+            font-size: 1em;
+        }
     </style>
 </head>
 <body>
@@ -538,6 +680,16 @@ static const char index_html[] = R"rawliteral(
             <div id="spell-display">Waiting for spell...</div>
         </div>
         
+        <div class="ble-controls">
+            <h3>📚 Spell Learning</h3>
+            <div class="spell-learning-controls">
+                <select id="spell-selector">
+                    <option value="">-- Select a spell to practice --</option>
+                </select>
+                <button class="button" onclick="practiceSpell()">✨ Practice Spell</button>
+            </div>
+        </div>
+        
         <h2 style="text-align: center; color: #4CAF50; margin-top: 30px;">Gesture Path</h2>
         <canvas id="gesture-canvas" width="600" height="600"></canvas>
         
@@ -572,6 +724,15 @@ static const char index_html[] = R"rawliteral(
         </div>
     </div>
     
+    <!-- Spell Learning Overlay -->
+    <div id="spell-overlay" class="spell-overlay" onclick="closeSpellOverlay(event)">
+        <div class="spell-overlay-content">
+            <div class="spell-overlay-title" id="spell-overlay-title">Spell Name</div>
+            <button class="spell-overlay-close" onclick="closeSpellOverlay()">✕ Close</button>
+            <img id="spell-overlay-image" src="" alt="Spell Gesture">
+        </div>
+    </div>
+    
     <script>
         const canvas = document.getElementById('imu-canvas');
         const ctx = canvas.getContext('2d');
@@ -592,22 +753,6 @@ static const char index_html[] = R"rawliteral(
         
         // WebSocket connection
         let ws = null;
-
-        function showToast(message, type = 'success') {
-            const toast = document.createElement('div');
-            const safeType = type === 'error' ? 'error' : 'success';
-            toast.className = `toast ${safeType}`;
-            const icon = document.createElement('span');
-            icon.textContent = safeType === 'error' ? 'X' : 'V';
-            const text = document.createElement('span');
-            text.textContent = message;
-            toast.appendChild(icon);
-            toast.appendChild(text);
-            document.body.appendChild(toast);
-            setTimeout(() => {
-                toast.remove();
-            }, 3000);
-        }
         
         function connectWebSocket() {
             const wsUrl = `ws://${window.location.host}/ws`;
@@ -883,6 +1028,80 @@ static const char index_html[] = R"rawliteral(
         
         // Initialize gesture canvas
         clearGestureCanvas();
+        
+        // Spell Learning Functions
+        const SPELL_NAMES = [
+            "The_Force_Spell", "Colloportus", "Colloshoo", "The_Hour_Reversal_Reversal_Charm",
+            "Evanesco", "Herbivicus", "Orchideous", "Brachiabindo", "Meteolojinx", "Riddikulus",
+            "Silencio", "Immobulus", "Confringo", "Petrificus_Totalus", "Flipendo",
+            "The_Cheering_Charm", "Salvio_Hexia", "Pestis_Incendium", "Alohomora", "Protego",
+            "Langlock", "Mucus_Ad_Nauseum", "Flagrate", "Glacius", "Finite", "Anteoculatia",
+            "Expelliarmus", "Expecto_Patronum", "Descendo", "Depulso", "Reducto", "Colovaria",
+            "Aberto", "Confundo", "Densaugeo", "The_Stretching_Jinx", "Entomorphis",
+            "The_Hair_Thickening_Growing_Charm", "Bombarda", "Finestra", "The_Sleeping_Charm",
+            "Rictusempra", "Piertotum_Locomotor", "Expulso", "Impedimenta", "Ascendio",
+            "Incarcerous", "Ventus", "Revelio", "Accio", "Melefors", "Scourgify",
+            "Wingardium_Leviosa", "Nox", "Stupefy", "Spongify", "Lumos", "Appare_Vestigium",
+            "Verdimillious", "Fulgari", "Reparo", "Locomotor", "Quietus", "Everte_Statum",
+            "Incendio", "Aguamenti", "Sonorus", "Cantis", "Arania_Exumai", "Calvorio",
+            "The_Hour_Reversal_Charm", "Vermillious", "The_Pepper-Breath_Hex"
+        ];
+        
+        // Map spell names to SPIFFS filenames (32 char limit including .png)
+        // Some names are shortened to fit SPIFFS filename restrictions
+        const SPELL_FILENAME_MAP = {
+            "The_Hair_Thickening_Growing_Charm": "hair_grow_charm.png",
+            // Default: use lowercase with underscores
+        };
+        
+        function spellNameToFilename(spellName) {
+            // Check if there's a custom mapping
+            if (SPELL_FILENAME_MAP[spellName]) {
+                return SPELL_FILENAME_MAP[spellName];
+            }
+            // Default: convert to lowercase
+            return spellName.toLowerCase() + '.png';
+        }
+        
+        function populateSpellSelector() {
+            const selector = document.getElementById('spell-selector');
+            SPELL_NAMES.forEach(spell => {
+                const option = document.createElement('option');
+                option.value = spell;
+                option.textContent = spell.replace(/_/g, ' ');
+                selector.appendChild(option);
+            });
+        }
+        
+        function practiceSpell() {
+            const selector = document.getElementById('spell-selector');
+            const selectedSpell = selector.value;
+            
+            if (!selectedSpell) {
+                showToast('Please select a spell to practice', 'error');
+                return;
+            }
+            
+            const filename = spellNameToFilename(selectedSpell);
+            const imageUrl = `/gesture/${filename}`;
+            
+            // Update overlay
+            document.getElementById('spell-overlay-title').textContent = selectedSpell.replace(/_/g, ' ');
+            document.getElementById('spell-overlay-image').src = imageUrl;
+            
+            // Show overlay
+            document.getElementById('spell-overlay').classList.add('active');
+        }
+        
+        function closeSpellOverlay(event) {
+            // Close if clicking on overlay background or close button
+            if (!event || event.target.id === 'spell-overlay' || event.target.className.includes('spell-overlay-close')) {
+                document.getElementById('spell-overlay').classList.remove('active');
+            }
+        }
+        
+        // Initialize spell selector on page load
+        populateSpellSelector();
         
         // Toast notification function
         function showToast(message, type = 'success') {
@@ -1481,9 +1700,28 @@ static const char index_html[] = R"rawliteral(
         
         // Load settings on page load
         setTimeout(loadSettings, 2000);
+        setTimeout(loadHotspotSettings, 2000);
         
         // Load stored MAC on page load
         setTimeout(loadStoredMac, 1000);
+        
+        // Load hotspot settings
+        function loadHotspotSettings() {
+            fetch('/hotspot/get')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('hotspot-enabled').checked = data.enabled || false;
+                        document.getElementById('hotspot-ssid').value = data.ssid || '';
+                        document.getElementById('hotspot-password').value = data.password || '';
+                        document.getElementById('hotspot-channel').value = data.channel || 6;
+                        console.log('Hotspot settings loaded:', data);
+                    }
+                })
+                .catch(error => {
+                    console.error('Failed to load hotspot settings:', error);
+                });
+        }
         
         // WiFi Management Functions
         function scanWifi() {
@@ -1683,10 +1921,51 @@ bool WebServer::begin(uint16_t port)
         return true;
     }
 
+    // Initialize SPIFFS for gesture images
+    ESP_LOGI(TAG, "Initializing SPIFFS for gesture images...");
+    esp_vfs_spiffs_conf_t spiffs_conf = {
+        .base_path = "/spiffs",
+        .partition_label = "spiffs",
+        .max_files = 5,
+        .format_if_mount_failed = true // Auto-format empty partition
+    };
+
+    esp_err_t ret = esp_vfs_spiffs_register(&spiffs_conf);
+    if (ret != ESP_OK)
+    {
+        if (ret == ESP_FAIL)
+        {
+            ESP_LOGW(TAG, "SPIFFS mount failed - partition may be corrupted or not flashed");
+            ESP_LOGW(TAG, "Run './upload_gestures.sh' to flash gesture images");
+        }
+        else if (ret == ESP_ERR_NOT_FOUND)
+        {
+            ESP_LOGW(TAG, "SPIFFS partition not found - check partition table");
+            ESP_LOGW(TAG, "Expected: offset=0x490000, size=0x370000 (3.6MB)");
+        }
+        else
+        {
+            ESP_LOGW(TAG, "SPIFFS init failed (%s) - gesture images unavailable", esp_err_to_name(ret));
+        }
+    }
+    else
+    {
+        size_t total = 0, used = 0;
+        ret = esp_spiffs_info("spiffs", &total, &used);
+        if (ret == ESP_OK)
+        {
+            ESP_LOGI(TAG, "SPIFFS: %d KB total, %d KB used", total / 1024, used / 1024);
+            if (used == 0)
+            {
+                ESP_LOGI(TAG, "SPIFFS is empty - run './upload_gestures.sh' to upload gesture images");
+            }
+        }
+    }
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = port;
     config.max_open_sockets = 7;
-    config.max_uri_handlers = 20; // Support all handlers + buffer for future endpoints
+    config.max_uri_handlers = 25; // Support all handlers + buffer for future endpoints
     config.lru_purge_enable = true;
 
     if (httpd_start(&server, &config) != ESP_OK)
@@ -1894,6 +2173,19 @@ bool WebServer::begin(uint16_t port)
         ESP_LOGW(TAG, "Hotspot settings handler registration FAILED");
     }
 
+    httpd_uri_t hotspot_get = {
+        .uri = "/hotspot/get",
+        .method = HTTP_GET,
+        .handler = hotspot_get_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &hotspot_get) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Hotspot get handler registration FAILED");
+    }
+
     httpd_uri_t system_reboot = {
         .uri = "/system/reboot",
         .method = HTTP_POST,
@@ -1907,9 +2199,23 @@ bool WebServer::begin(uint16_t port)
         ESP_LOGW(TAG, "System reboot handler registration FAILED");
     }
 
+    // Gesture image handler (wildcard for /gesture/*.png)
+    httpd_uri_t gesture_image = {
+        .uri = "/gesture/*",
+        .method = HTTP_GET,
+        .handler = gesture_image_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &gesture_image) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Gesture image handler registration FAILED");
+    }
+
     running = true;
     ESP_LOGI(TAG, "Web server started on port %d", port);
-    ESP_LOGI(TAG, "Registered endpoints: /, /ws, /generate_204, /hotspot-detect.html, /scan, /set_mac, /get_stored_mac, /connect, /disconnect, /settings/get, /settings/save, /settings/reset, /wifi/scan, /wifi/connect, /hotspot/settings, /system/reboot");
+    ESP_LOGI(TAG, "Registered endpoints: /, /ws, /generate_204, /hotspot-detect.html, /scan, /set_mac, /get_stored_mac, /connect, /disconnect, /settings/get, /settings/save, /settings/reset, /wifi/scan, /wifi/connect, /hotspot/settings, /hotspot/get, /system/reboot, /gesture/*");
     return true;
 }
 
@@ -2220,14 +2526,22 @@ void WebServer::broadcastLowConfidence(const char *spell_name, float confidence)
 void WebServer::broadcastWandInfo(const char *firmware_version, const char *serial_number,
                                   const char *sku, const char *device_id, const char *wand_type)
 {
+    // Sanitize all input strings
+    char safe_fw[32], safe_serial[32], safe_sku[32], safe_devid[32], safe_type[32];
+    sanitize_for_json(safe_fw, firmware_version, sizeof(safe_fw));
+    sanitize_for_json(safe_serial, serial_number, sizeof(safe_serial));
+    sanitize_for_json(safe_sku, sku, sizeof(safe_sku));
+    sanitize_for_json(safe_devid, device_id, sizeof(safe_devid));
+    sanitize_for_json(safe_type, wand_type, sizeof(safe_type));
+
     // Cache the wand info for new clients
     if (xSemaphoreTake(data_mutex, pdMS_TO_TICKS(10)) == pdTRUE)
     {
-        snprintf(cached_data.firmware_version, sizeof(cached_data.firmware_version), "%s", firmware_version ? firmware_version : "");
-        snprintf(cached_data.serial_number, sizeof(cached_data.serial_number), "%s", serial_number ? serial_number : "");
-        snprintf(cached_data.sku, sizeof(cached_data.sku), "%s", sku ? sku : "");
-        snprintf(cached_data.device_id, sizeof(cached_data.device_id), "%s", device_id ? device_id : "");
-        snprintf(cached_data.wand_type, sizeof(cached_data.wand_type), "%s", wand_type ? wand_type : "");
+        snprintf(cached_data.firmware_version, sizeof(cached_data.firmware_version), "%s", safe_fw);
+        snprintf(cached_data.serial_number, sizeof(cached_data.serial_number), "%s", safe_serial);
+        snprintf(cached_data.sku, sizeof(cached_data.sku), "%s", safe_sku);
+        snprintf(cached_data.device_id, sizeof(cached_data.device_id), "%s", safe_devid);
+        snprintf(cached_data.wand_type, sizeof(cached_data.wand_type), "%s", safe_type);
         xSemaphoreGive(data_mutex);
     }
 
@@ -2237,19 +2551,11 @@ void WebServer::broadcastWandInfo(const char *firmware_version, const char *seri
     char json[1024];
     snprintf(json, sizeof(json),
              "{\"type\":\"wand_info\",\"firmware\":\"%s\",\"serial\":\"%s\",\"sku\":\"%s\",\"device_id\":\"%s\",\"wand_type\":\"%s\"}",
-             firmware_version ? firmware_version : "",
-             serial_number ? serial_number : "",
-             sku ? sku : "",
-             device_id ? device_id : "",
-             wand_type ? wand_type : "");
+             safe_fw, safe_serial, safe_sku, safe_devid, safe_type);
     broadcast_to_clients(server, ws_clients, &ws_client_count, client_mutex, json);
 
     ESP_LOGI(TAG, "Wand info broadcast: FW=%s, Serial=%s, SKU=%s, DevID=%s, Type=%s",
-             firmware_version ? firmware_version : "--",
-             serial_number ? serial_number : "--",
-             sku ? sku : "--",
-             device_id ? device_id : "--",
-             wand_type ? wand_type : "--");
+             safe_fw, safe_serial, safe_sku, safe_devid, safe_type);
 }
 
 void WebServer::broadcastButtonPress(bool b1, bool b2, bool b3, bool b4)
@@ -2272,10 +2578,15 @@ void WebServer::broadcastScanResult(const char *address, const char *name, int r
     if (!running || !address || !name)
         return;
 
+    char sanitized_name[64];
+    char sanitized_address[24];
+    sanitize_for_json(sanitized_name, name, sizeof(sanitized_name));
+    sanitize_for_json(sanitized_address, address, sizeof(sanitized_address));
+
     char json[256];
     snprintf(json, sizeof(json),
              "{\"type\":\"scan_result\",\"address\":\"%s\",\"name\":\"%s\",\"rssi\":%d}",
-             address, name, rssi);
+             sanitized_address, sanitized_name, rssi);
     broadcast_to_clients(server, ws_clients, &ws_client_count, client_mutex, json);
 }
 
@@ -2530,32 +2841,32 @@ esp_err_t WebServer::settings_get_handler(httpd_req_t *req)
     char mqtt_broker[128] = {0};
     char mqtt_username[64] = {0};
     char mqtt_password[64] = {0};
-    
+
     if (err == ESP_OK)
     {
         uint8_t ha_mqtt_u8 = 1;
         nvs_get_u8(nvs_handle, "ha_mqtt_enabled", &ha_mqtt_u8);
         ha_mqtt_enabled = (ha_mqtt_u8 != 0);
-        
+
         size_t required_size;
         err = nvs_get_str(nvs_handle, "mqtt_broker", NULL, &required_size);
         if (err == ESP_OK && required_size <= sizeof(mqtt_broker))
         {
             nvs_get_str(nvs_handle, "mqtt_broker", mqtt_broker, &required_size);
         }
-        
+
         err = nvs_get_str(nvs_handle, "mqtt_username", NULL, &required_size);
         if (err == ESP_OK && required_size <= sizeof(mqtt_username))
         {
             nvs_get_str(nvs_handle, "mqtt_username", mqtt_username, &required_size);
         }
-        
+
         err = nvs_get_str(nvs_handle, "mqtt_password", NULL, &required_size);
         if (err == ESP_OK && required_size <= sizeof(mqtt_password))
         {
             nvs_get_str(nvs_handle, "mqtt_password", mqtt_password, &required_size);
         }
-        
+
         nvs_close(nvs_handle);
     }
 
@@ -2568,7 +2879,7 @@ esp_err_t WebServer::settings_get_handler(httpd_req_t *req)
                            i < 72 ? "," : "");
     }
 
-    offset += snprintf(buffer + offset, buffer_size - offset, 
+    offset += snprintf(buffer + offset, buffer_size - offset,
                        "], \"ha_mqtt_enabled\": %s, \"mqtt_broker\": \"%s\", \"mqtt_username\": \"%s\", \"mqtt_password\": \"%s\"}",
                        ha_mqtt_enabled ? "true" : "false",
                        mqtt_broker,
@@ -2904,20 +3215,201 @@ esp_err_t WebServer::settings_reset_handler(httpd_req_t *req)
 esp_err_t WebServer::wifi_scan_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "wifi_scan_handler called!");
-    
-    // TODO: Implement actual WiFi scanning using ESP-IDF WiFi APIs
-    // For now, return a placeholder response
+
+    // Get current WiFi mode
+    wifi_mode_t current_mode;
+    esp_err_t err = esp_wifi_get_mode(&current_mode);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to get WiFi mode: %s", esp_err_to_name(err));
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Failed to get WiFi mode\",\"networks\":[]}");
+        return ESP_OK;
+    }
+
+    // If in AP-only mode, switch to APSTA mode temporarily
+    bool mode_changed = false;
+    if (current_mode == WIFI_MODE_AP)
+    {
+        ESP_LOGI(TAG, "Switching from AP to APSTA mode for scanning");
+        err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to set APSTA mode: %s", esp_err_to_name(err));
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Failed to set scan mode\",\"networks\":[]}");
+            return ESP_OK;
+        }
+        mode_changed = true;
+    }
+
+    // Configure scan to find all available APs
+    wifi_scan_config_t scan_config = {};
+    scan_config.ssid = NULL;
+    scan_config.bssid = NULL;
+    scan_config.channel = 0;
+    scan_config.show_hidden = false;
+    scan_config.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+    scan_config.scan_time.active.min = 100;
+    scan_config.scan_time.active.max = 300;
+    scan_config.scan_time.passive = 0;
+
+    // Start WiFi scan (blocking)
+    err = esp_wifi_scan_start(&scan_config, true);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "WiFi scan failed: %s", esp_err_to_name(err));
+
+        // Restore original mode if we changed it
+        if (mode_changed)
+        {
+            esp_wifi_set_mode(WIFI_MODE_AP);
+        }
+
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Scan failed\",\"networks\":[]}");
+        return ESP_OK;
+    }
+
+    // Get number of APs found
+    uint16_t ap_count = 0;
+    esp_wifi_scan_get_ap_num(&ap_count);
+
+    ESP_LOGI(TAG, "Found %d access points", ap_count);
+
+    // Restore original mode if we changed it
+    if (mode_changed)
+    {
+        ESP_LOGI(TAG, "Restoring AP mode");
+        esp_wifi_set_mode(WIFI_MODE_AP);
+    }
+
+    if (ap_count == 0)
+    {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":true,\"networks\":[]}");
+        return ESP_OK;
+    }
+
+    // Limit to max 20 networks to avoid memory issues
+    if (ap_count > 20)
+    {
+        ap_count = 20;
+    }
+
+    // Allocate memory for AP records
+    wifi_ap_record_t *ap_records = (wifi_ap_record_t *)malloc(sizeof(wifi_ap_record_t) * ap_count);
+    if (!ap_records)
+    {
+        ESP_LOGE(TAG, "Failed to allocate memory for AP records");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Memory allocation failed\",\"networks\":[]}");
+        return ESP_OK;
+    }
+
+    // Get AP records
+    err = esp_wifi_scan_get_ap_records(&ap_count, ap_records);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to get AP records: %s", esp_err_to_name(err));
+        free(ap_records);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Failed to get records\",\"networks\":[]}");
+        return ESP_OK;
+    }
+
+    // Build JSON response
+    char *response = (char *)malloc(8192);
+    if (!response)
+    {
+        free(ap_records);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Memory allocation failed\",\"networks\":[]}");
+        return ESP_OK;
+    }
+
+    int offset = snprintf(response, 8192, "{\"success\":true,\"networks\":[");
+
+    for (int i = 0; i < ap_count; i++)
+    {
+        const char *auth_mode = "OPEN";
+        switch (ap_records[i].authmode)
+        {
+        case WIFI_AUTH_OPEN:
+            auth_mode = "OPEN";
+            break;
+        case WIFI_AUTH_WEP:
+            auth_mode = "WEP";
+            break;
+        case WIFI_AUTH_WPA_PSK:
+            auth_mode = "WPA";
+            break;
+        case WIFI_AUTH_WPA2_PSK:
+            auth_mode = "WPA2";
+            break;
+        case WIFI_AUTH_WPA_WPA2_PSK:
+            auth_mode = "WPA/WPA2";
+            break;
+        case WIFI_AUTH_WPA3_PSK:
+            auth_mode = "WPA3";
+            break;
+        case WIFI_AUTH_WPA2_WPA3_PSK:
+            auth_mode = "WPA2/WPA3";
+            break;
+        default:
+            auth_mode = "UNKNOWN";
+            break;
+        }
+
+        // Escape any special characters in SSID
+        char escaped_ssid[64];
+        const char *src = (const char *)ap_records[i].ssid;
+        char *dst = escaped_ssid;
+        int max_len = sizeof(escaped_ssid) - 1;
+
+        while (*src && max_len > 1)
+        {
+            if (*src == '"' || *src == '\\')
+            {
+                if (max_len > 2)
+                {
+                    *dst++ = '\\';
+                    max_len--;
+                }
+            }
+            *dst++ = *src++;
+            max_len--;
+        }
+        *dst = '\0';
+
+        offset += snprintf(response + offset, 8192 - offset,
+                           "%s{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":\"%s\",\"channel\":%d}",
+                           i > 0 ? "," : "",
+                           escaped_ssid,
+                           ap_records[i].rssi,
+                           auth_mode,
+                           ap_records[i].primary);
+
+        if (offset >= 8000)
+            break;
+    }
+
+    offset += snprintf(response + offset, 8192 - offset, "]}");
+
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"success\":true,\"networks\":[]}");
-    
-    ESP_LOGI(TAG, "WiFi scan not yet implemented - returning empty list");
+    httpd_resp_sendstr(req, response);
+
+    free(response);
+    free(ap_records);
+
+    ESP_LOGI(TAG, "WiFi scan completed successfully with %d networks", ap_count);
     return ESP_OK;
 }
 
 esp_err_t WebServer::wifi_connect_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "wifi_connect_handler called!");
-    
+
     // Read the POST body
     int content_len = req->content_len;
     char *buffer = (char *)malloc(content_len + 1);
@@ -2937,11 +3429,11 @@ esp_err_t WebServer::wifi_connect_handler(httpd_req_t *req)
 
     buffer[content_len] = 0;
     ESP_LOGI(TAG, "Received WiFi connect request: %s", buffer);
-    
+
     // Parse SSID and password
     char ssid[32] = {0};
     char password[64] = {0};
-    
+
     char *ssid_ptr = strstr(buffer, "\"ssid\":");
     if (ssid_ptr)
     {
@@ -2962,7 +3454,7 @@ esp_err_t WebServer::wifi_connect_handler(httpd_req_t *req)
             }
         }
     }
-    
+
     char *password_ptr = strstr(buffer, "\"password\":");
     if (password_ptr)
     {
@@ -2983,7 +3475,7 @@ esp_err_t WebServer::wifi_connect_handler(httpd_req_t *req)
             }
         }
     }
-    
+
     // Save WiFi credentials to NVS
     if (strlen(ssid) > 0)
     {
@@ -2998,11 +3490,11 @@ esp_err_t WebServer::wifi_connect_handler(httpd_req_t *req)
             ESP_LOGI(TAG, "WiFi credentials saved to NVS: SSID=%s", ssid);
         }
     }
-    
+
     // TODO: Actually connect to WiFi using ESP-IDF WiFi APIs
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"WiFi credentials saved. Restart to connect.\"}");
-    
+
     free(buffer);
     return ESP_OK;
 }
@@ -3010,7 +3502,7 @@ esp_err_t WebServer::wifi_connect_handler(httpd_req_t *req)
 esp_err_t WebServer::hotspot_settings_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "hotspot_settings_handler called!");
-    
+
     // Read the POST body
     int content_len = req->content_len;
     char *buffer = (char *)malloc(content_len + 1);
@@ -3030,13 +3522,13 @@ esp_err_t WebServer::hotspot_settings_handler(httpd_req_t *req)
 
     buffer[content_len] = 0;
     ESP_LOGI(TAG, "Received hotspot settings: %s", buffer);
-    
+
     // Parse settings
     bool enabled = (strstr(buffer, "\"enabled\":true") != NULL);
     char ssid[32] = {0};
     char password[64] = {0};
     int channel = 1;
-    
+
     char *ssid_ptr = strstr(buffer, "\"ssid\":");
     if (ssid_ptr)
     {
@@ -3057,7 +3549,7 @@ esp_err_t WebServer::hotspot_settings_handler(httpd_req_t *req)
             }
         }
     }
-    
+
     char *password_ptr = strstr(buffer, "\"password\":");
     if (password_ptr)
     {
@@ -3078,13 +3570,13 @@ esp_err_t WebServer::hotspot_settings_handler(httpd_req_t *req)
             }
         }
     }
-    
+
     char *channel_ptr = strstr(buffer, "\"channel\":");
     if (channel_ptr)
     {
         sscanf(channel_ptr, "\"channel\":%d", &channel);
     }
-    
+
     // Save hotspot settings to NVS
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
@@ -3104,25 +3596,153 @@ esp_err_t WebServer::hotspot_settings_handler(httpd_req_t *req)
         nvs_close(nvs_handle);
         ESP_LOGI(TAG, "Hotspot settings saved: enabled=%d, SSID=%s, channel=%d", enabled, ssid, channel);
     }
-    
+
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"Hotspot settings saved. Restart to apply.\"}");
-    
+
     free(buffer);
+    return ESP_OK;
+}
+
+esp_err_t WebServer::hotspot_get_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "hotspot_get_handler called!");
+
+    // Load hotspot settings from NVS
+    char hotspot_ssid[32] = {0};
+    char hotspot_password[64] = {0};
+    uint8_t hotspot_channel = 6;
+    bool hotspot_enabled = false;
+
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err == ESP_OK)
+    {
+        uint8_t enabled = 0;
+        nvs_get_u8(nvs_handle, "hotspot_enabled", &enabled);
+        hotspot_enabled = (enabled != 0);
+
+        size_t required_size;
+        err = nvs_get_str(nvs_handle, "hotspot_ssid", NULL, &required_size);
+        if (err == ESP_OK && required_size > 0 && required_size <= sizeof(hotspot_ssid))
+        {
+            nvs_get_str(nvs_handle, "hotspot_ssid", hotspot_ssid, &required_size);
+        }
+
+        err = nvs_get_str(nvs_handle, "hotspot_password", NULL, &required_size);
+        if (err == ESP_OK && required_size > 0 && required_size <= sizeof(hotspot_password))
+        {
+            nvs_get_str(nvs_handle, "hotspot_password", hotspot_password, &required_size);
+        }
+
+        uint8_t channel = 6;
+        nvs_get_u8(nvs_handle, "hotspot_channel", &channel);
+        if (channel >= 1 && channel <= 13)
+        {
+            hotspot_channel = channel;
+        }
+
+        nvs_close(nvs_handle);
+    }
+
+    // Build JSON response
+    char response[512];
+    snprintf(response, sizeof(response),
+             "{\"success\":true,\"enabled\":%s,\"ssid\":\"%s\",\"password\":\"%s\",\"channel\":%d}",
+             hotspot_enabled ? "true" : "false",
+             hotspot_ssid,
+             hotspot_password,
+             hotspot_channel);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, response);
+
     return ESP_OK;
 }
 
 esp_err_t WebServer::system_reboot_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "system_reboot_handler called! Rebooting in 2 seconds...");
-    
+
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"Rebooting device...\"}");
-    
+
     // Schedule reboot after a short delay to allow response to be sent
     vTaskDelay(pdMS_TO_TICKS(2000));
     esp_restart();
-    
+
     return ESP_OK;
 }
 
+esp_err_t WebServer::gesture_image_handler(httpd_req_t *req)
+{
+    // Extract spell name from URI: /gesture/<spell_name>.png
+    const char *uri = req->uri;
+    const char *prefix = "/gesture/";
+    size_t prefix_len = strlen(prefix);
+
+    if (strncmp(uri, prefix, prefix_len) != 0)
+    {
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+
+    // Get filename (spell_name.png)
+    const char *filename_start = uri + prefix_len;
+    char filepath[128];
+    snprintf(filepath, sizeof(filepath), "/spiffs/%s", filename_start);
+
+    ESP_LOGI(TAG, "Serving gesture image: %s", filepath);
+
+    // Open file from SPIFFS
+    FILE *file = fopen(filepath, "r");
+    if (!file)
+    {
+        ESP_LOGW(TAG, "Gesture image not found: %s", filepath);
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+
+    // Get file size
+    fseek(file, 0, SEEK_END);
+    size_t file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    // Set content type and headers
+    httpd_resp_set_type(req, "image/png");
+    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400"); // Cache for 1 day
+
+    // Allocate buffer for file transfer
+    char *buffer = (char *)malloc(1024);
+    if (!buffer)
+    {
+        fclose(file);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    // Stream file to client
+    size_t bytes_remaining = file_size;
+    while (bytes_remaining > 0)
+    {
+        size_t chunk_size = (bytes_remaining > 1024) ? 1024 : bytes_remaining;
+        size_t bytes_read = fread(buffer, 1, chunk_size, file);
+
+        if (bytes_read > 0)
+        {
+            httpd_resp_send_chunk(req, buffer, bytes_read);
+            bytes_remaining -= bytes_read;
+        }
+        else
+        {
+            break; // EOF or error
+        }
+    }
+
+    // Finish response
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    free(buffer);
+    fclose(file);
+    return ESP_OK;
+}

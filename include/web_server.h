@@ -70,7 +70,9 @@ private:
     static esp_err_t wifi_scan_handler(httpd_req_t *req);        // Scan WiFi networks
     static esp_err_t wifi_connect_handler(httpd_req_t *req);     // Connect to WiFi
     static esp_err_t hotspot_settings_handler(httpd_req_t *req); // Save hotspot settings
+    static esp_err_t hotspot_get_handler(httpd_req_t *req);      // Get hotspot settings
     static esp_err_t system_reboot_handler(httpd_req_t *req);    // Reboot device
+    static esp_err_t gesture_image_handler(httpd_req_t *req);    // Serve gesture images from SPIFFS
 
     void addWebSocketClient(int fd);
     void removeWebSocketClient(int fd);

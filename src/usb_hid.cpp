@@ -6,6 +6,9 @@
 #include "nvs.h"
 #include <string.h>
 #include <cmath>
+#include "soc/rtc_cntl_reg.h"
+#include "rom/ets_sys.h"
+#include "esp_private/system_internal.h"
 
 static const char *TAG = "usb_hid";
 
@@ -300,6 +303,15 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
     (void)buffer;
     (void)bufsize;
 }
+
+// TinyUSB CDC line state callback - disabled for manual bootloader entry
+// Use BOOT button to enter bootloader mode for flashing
+void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts)
+{
+    (void)itf;
+    (void)dtr;
+    (void)rts;
+}
 #endif
 
 USBHIDManager::USBHIDManager()
@@ -367,6 +379,9 @@ bool USBHIDManager::begin()
     ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
 
 #if CONFIG_TINYUSB_CDC_ENABLED
+    // CDC line state callback (tud_cdc_line_state_cb) is automatically called by TinyUSB
+    // Note: Auto-reset is currently disabled to prevent interference with monitoring
+
     s_prev_log_vprintf = esp_log_set_vprintf(usb_cdc_log_vprintf);
     ESP_LOGI(TAG, "USB CDC logging enabled");
 #endif
@@ -1085,6 +1100,7 @@ void USBHIDManager::sendSpellGamepadForSpell(const char *spell_name)
 
 #if !USE_USB_HID_DEVICE
 // Stub implementations when USB HID is disabled
+// Note: setInvertMouseY() and getInvertMouseY() are inline in header - not redefined here
 void USBHIDManager::sendMouseReport(int8_t x, int8_t y, int8_t wheel, uint8_t buttons) {}
 void USBHIDManager::sendKeyboardReport(uint8_t modifiers, uint8_t keycode) {}
 uint8_t USBHIDManager::getKeycodeForSpell(const char *spell_name) { return 0; }
@@ -1095,8 +1111,6 @@ bool USBHIDManager::loadSettings() { return true; }
 bool USBHIDManager::saveSettings() { return true; }
 bool USBHIDManager::resetSettings() { return true; }
 void USBHIDManager::setMouseSensitivityValue(float sensitivity) {}
-void USBHIDManager::setInvertMouseY(bool invert) {}
-bool USBHIDManager::getInvertMouseY() const { return true; }
 void USBHIDManager::updateGamepadFromGesture(float delta_x, float delta_y) {}
 void USBHIDManager::setGamepadButtons(uint16_t buttons) {}
 void USBHIDManager::setHidMode(HIDMode mode) {}

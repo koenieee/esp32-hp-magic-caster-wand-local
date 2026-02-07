@@ -382,19 +382,63 @@ extern "C" void app_main()
             .policy = WIFI_COUNTRY_POLICY_AUTO};
         ESP_ERROR_CHECK(esp_wifi_set_country(&country));
 
+        // Load AP settings from NVS (fallback to config.h defaults)
+        char ap_ssid[32] = {0};
+        char ap_password[64] = {0};
+        uint8_t ap_channel = 6;       // Default channel
+        bool hotspot_enabled = false; // By default use config.h values
+
+        nvs_handle_t nvs_handle;
+        esp_err_t nvs_err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+        if (nvs_err == ESP_OK)
+        {
+            uint8_t hotspot_en = 0;
+            nvs_get_u8(nvs_handle, "hotspot_enabled", &hotspot_en);
+            hotspot_enabled = (hotspot_en != 0);
+
+            size_t required_size;
+            nvs_err = nvs_get_str(nvs_handle, "hotspot_ssid", NULL, &required_size);
+            if (nvs_err == ESP_OK && required_size > 0 && required_size <= sizeof(ap_ssid))
+            {
+                nvs_get_str(nvs_handle, "hotspot_ssid", ap_ssid, &required_size);
+            }
+
+            nvs_err = nvs_get_str(nvs_handle, "hotspot_password", NULL, &required_size);
+            if (nvs_err == ESP_OK && required_size > 0 && required_size <= sizeof(ap_password))
+            {
+                nvs_get_str(nvs_handle, "hotspot_password", ap_password, &required_size);
+            }
+
+            uint8_t channel = 6;
+            nvs_get_u8(nvs_handle, "hotspot_channel", &channel);
+            if (channel >= 1 && channel <= 13)
+            {
+                ap_channel = channel;
+            }
+
+            nvs_close(nvs_handle);
+        }
+
+        // Use config.h defaults if NVS values are empty or hotspot not enabled
+        if (!hotspot_enabled || strlen(ap_ssid) == 0)
+        {
+            strncpy(ap_ssid, AP_SSID, sizeof(ap_ssid) - 1);
+            strncpy(ap_password, AP_PASSWORD, sizeof(ap_password) - 1);
+        }
+
         // Configure AP with improved compatibility settings
         wifi_config_t wifi_config = {};
-        strncpy((char *)wifi_config.ap.ssid, AP_SSID, sizeof(wifi_config.ap.ssid) - 1);
+        strncpy((char *)wifi_config.ap.ssid, ap_ssid, sizeof(wifi_config.ap.ssid) - 1);
         wifi_config.ap.ssid[sizeof(wifi_config.ap.ssid) - 1] = '\0';
         wifi_config.ap.ssid_len = strlen((char *)wifi_config.ap.ssid);
-        wifi_config.ap.channel = 6; // Use channel 6 (most compatible)
+        wifi_config.ap.channel = ap_channel;
         wifi_config.ap.max_connection = AP_MAX_CONNECTIONS;
         wifi_config.ap.beacon_interval = 100;
 
         // Use WPA2 security (Android often refuses open networks)
-        if (strlen(AP_PASSWORD) >= 8)
+        if (strlen(ap_password) >= 8)
         {
-            strncpy((char *)wifi_config.ap.password, AP_PASSWORD, sizeof(wifi_config.ap.password) - 1);
+            strncpy((char *)wifi_config.ap.password, ap_password, sizeof(wifi_config.ap.password) - 1);
             wifi_config.ap.password[sizeof(wifi_config.ap.password) - 1] = '\0';
             wifi_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
             wifi_config.ap.pairwise_cipher = WIFI_CIPHER_TYPE_CCMP;
@@ -413,13 +457,13 @@ extern "C" void app_main()
         ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW20));
 
         ESP_ERROR_CHECK(esp_wifi_start());
-        ESP_LOGI(TAG, "✓ WiFi AP started: %s", AP_SSID);
-        ESP_LOGI(TAG, "  Channel: 6 (2.4GHz)");
+        ESP_LOGI(TAG, "✓ WiFi AP started: %s", ap_ssid);
+        ESP_LOGI(TAG, "  Channel: %d (2.4GHz)", ap_channel);
         ESP_LOGI(TAG, "  Bandwidth: 20MHz");
-        if (strlen(AP_PASSWORD) >= 8)
+        if (strlen(ap_password) >= 8)
         {
             ESP_LOGI(TAG, "  Security: WPA2-PSK");
-            ESP_LOGI(TAG, "  Password: %s", AP_PASSWORD);
+            ESP_LOGI(TAG, "  Password: %s", ap_password);
         }
         else
         {
@@ -427,10 +471,10 @@ extern "C" void app_main()
         }
         ESP_LOGI(TAG, "  IP Address: 192.168.4.1");
         ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "Connect your device to '%s' WiFi network", AP_SSID);
-        if (strlen(AP_PASSWORD) >= 8)
+        ESP_LOGI(TAG, "Connect your device to '%s' WiFi network", ap_ssid);
+        if (strlen(ap_password) >= 8)
         {
-            ESP_LOGI(TAG, "Password: %s", AP_PASSWORD);
+            ESP_LOGI(TAG, "Password: %s", ap_password);
         }
         ESP_LOGI(TAG, "Then open browser: http://192.168.4.1/");
 #else
@@ -462,6 +506,10 @@ extern "C" void app_main()
 
             // Check if MQTT is enabled in NVS settings
             bool ha_mqtt_enabled = true; // Default: enabled
+            char mqtt_broker[128] = {0};
+            char mqtt_username[64] = {0};
+            char mqtt_password[64] = {0};
+
             nvs_handle_t nvs_handle;
             esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
             if (err == ESP_OK)
@@ -469,15 +517,59 @@ extern "C" void app_main()
                 uint8_t ha_mqtt_u8 = 1;
                 nvs_get_u8(nvs_handle, "ha_mqtt_enabled", &ha_mqtt_u8);
                 ha_mqtt_enabled = (ha_mqtt_u8 != 0);
+
+                // Load MQTT settings from NVS (fallback to config.h defaults)
+                size_t required_size;
+                err = nvs_get_str(nvs_handle, "mqtt_broker", NULL, &required_size);
+                if (err == ESP_OK && required_size > 0 && required_size <= sizeof(mqtt_broker))
+                {
+                    nvs_get_str(nvs_handle, "mqtt_broker", mqtt_broker, &required_size);
+                }
+
+                err = nvs_get_str(nvs_handle, "mqtt_username", NULL, &required_size);
+                if (err == ESP_OK && required_size > 0 && required_size <= sizeof(mqtt_username))
+                {
+                    nvs_get_str(nvs_handle, "mqtt_username", mqtt_username, &required_size);
+                }
+
+                err = nvs_get_str(nvs_handle, "mqtt_password", NULL, &required_size);
+                if (err == ESP_OK && required_size > 0 && required_size <= sizeof(mqtt_password))
+                {
+                    nvs_get_str(nvs_handle, "mqtt_password", mqtt_password, &required_size);
+                }
+
                 nvs_close(nvs_handle);
+            }
+
+            // Use defaults from config.h if NVS values are empty
+            if (strlen(mqtt_broker) == 0)
+            {
+                snprintf(mqtt_broker, sizeof(mqtt_broker), "mqtt://%s:%d", MQTT_SERVER, MQTT_PORT);
+            }
+            else if (strncmp(mqtt_broker, "mqtt://", 7) != 0)
+            {
+                // Add mqtt:// prefix if not present
+                char temp[121];
+                strncpy(temp, mqtt_broker, 120);
+                temp[120] = '\0';
+                snprintf(mqtt_broker, sizeof(mqtt_broker), "mqtt://%s", temp);
+            }
+
+            if (strlen(mqtt_username) == 0)
+            {
+                strncpy(mqtt_username, MQTT_USER, sizeof(mqtt_username) - 1);
+            }
+
+            if (strlen(mqtt_password) == 0)
+            {
+                strncpy(mqtt_password, MQTT_PASSWORD, sizeof(mqtt_password) - 1);
             }
 
             if (ha_mqtt_enabled)
             {
-                // Initialize MQTT client for Home Assistant
-                char mqtt_uri[128];
-                snprintf(mqtt_uri, sizeof(mqtt_uri), "mqtt://%s:%d", MQTT_SERVER, MQTT_PORT);
-                if (mqttClient.begin(mqtt_uri, MQTT_USER, MQTT_PASSWORD))
+                // Initialize MQTT client for Home Assistant with settings from NVS or config.h
+                ESP_LOGI(TAG, "Connecting to MQTT broker: %s", mqtt_broker);
+                if (mqttClient.begin(mqtt_broker, mqtt_username, mqtt_password))
                 {
                     ESP_LOGI(TAG, "✓ MQTT client initialized for Home Assistant");
                 }
