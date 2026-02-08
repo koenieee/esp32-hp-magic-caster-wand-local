@@ -634,16 +634,25 @@ extern "C" void app_main()
             ESP_ERROR_CHECK(esp_wifi_connect());
 
             ESP_LOGI(TAG, "WiFi connecting to %s...", wifi_sta_ssid);
-            ESP_LOGI(TAG, "Waiting for WiFi connection...");
+            ESP_LOGI(TAG, "Waiting for WiFi connection and IP address...");
 
-            // Wait for connection (timeout after 10 seconds)
+            // Wait for connection AND IP address (timeout after 15 seconds)
             int wait_count = 0;
-            while (wait_count < 20) // 20 * 500ms = 10 seconds
+            while (wait_count < 30) // 30 * 500ms = 15 seconds
             {
                 wifi_ap_record_t ap_info;
-                if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK)
+                esp_netif_ip_info_t ip_info;
+                esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+
+                // Check both WiFi connection AND IP address assignment
+                if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK &&
+                    netif &&
+                    esp_netif_get_ip_info(netif, &ip_info) == ESP_OK &&
+                    ip_info.ip.addr != 0)
                 {
                     ESP_LOGI(TAG, "✓ Connected to WiFi: %s", wifi_sta_ssid);
+                    ESP_LOGI(TAG, "✓ IP Address: " IPSTR, IP2STR(&ip_info.ip));
+                    ESP_LOGI(TAG, "✓ Gateway: " IPSTR, IP2STR(&ip_info.gw));
                     ESP_LOGI(TAG, "✓ WiFi Station mode active");
                     wifi_connected = true;
                     break;
@@ -796,15 +805,61 @@ extern "C" void app_main()
 
             if (ha_mqtt_enabled)
             {
-                // Initialize MQTT client for Home Assistant with settings from NVS or config.h
-                ESP_LOGI(TAG, "Connecting to MQTT broker: %s", mqtt_broker);
-                if (mqttClient.begin(mqtt_broker, mqtt_username, mqtt_password))
+                // Give network stack time to fully initialize after getting IP
+                ESP_LOGI(TAG, "Waiting 2 seconds for network stack to stabilize...");
+                vTaskDelay(pdMS_TO_TICKS(2000));
+
+                // Validate broker address before attempting connection
+                bool broker_valid = (strlen(mqtt_broker) > 7 &&
+                                     strstr(mqtt_broker, "mqtt://") != nullptr);
+
+                ESP_LOGI(TAG, "═══════════════════════════════════════════════════════");
+                ESP_LOGI(TAG, "Network Status:");
+
+                // Show current IP address
+                esp_netif_ip_info_t ip_info;
+                esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+                if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK)
                 {
-                    ESP_LOGI(TAG, "✓ MQTT client initialized for Home Assistant");
+                    ESP_LOGI(TAG, "  ESP32 IP: " IPSTR, IP2STR(&ip_info.ip));
+                    ESP_LOGI(TAG, "  Gateway: " IPSTR, IP2STR(&ip_info.gw));
+                    ESP_LOGI(TAG, "  Netmask: " IPSTR, IP2STR(&ip_info.netmask));
                 }
                 else
                 {
-                    ESP_LOGW(TAG, "MQTT connection failed - continuing without Home Assistant");
+                    ESP_LOGW(TAG, "  ESP32 IP: Not connected to WiFi (using AP mode?)");
+                }
+
+                ESP_LOGI(TAG, "═══════════════════════════════════════════════════════");
+                ESP_LOGI(TAG, "MQTT Configuration:");
+                ESP_LOGI(TAG, "  Broker: %s", mqtt_broker);
+                ESP_LOGI(TAG, "  Username: %s", mqtt_username);
+                ESP_LOGI(TAG, "  Password: %s", strlen(mqtt_password) > 0 ? "***" : "(empty)");
+                ESP_LOGI(TAG, "═══════════════════════════════════════════════════════");
+
+                if (!broker_valid)
+                {
+                    ESP_LOGW(TAG, "⚠️  Invalid MQTT broker URI: '%s'", mqtt_broker);
+                    ESP_LOGW(TAG, "→ Expected format: mqtt://hostname:port or mqtt://IP:port");
+                    ESP_LOGW(TAG, "→ MQTT disabled - configure via web interface");
+                }
+                else
+                {
+                    // Initialize MQTT client for Home Assistant with settings from NVS or config.h
+                    ESP_LOGI(TAG, "🔌 Attempting connection to MQTT broker...");
+                    ESP_LOGI(TAG, "   Timeout: 5s, Reconnect interval: 30s");
+                    if (mqttClient.begin(mqtt_broker, mqtt_username, mqtt_password))
+                    {
+                        ESP_LOGI(TAG, "✓ MQTT client initialized for Home Assistant");
+                        ESP_LOGI(TAG, "   Connection errors will retry every 30 seconds");
+                    }
+                    else
+                    {
+                        ESP_LOGW(TAG, "⚠️  MQTT initialization failed - continuing without Home Assistant");
+                        ESP_LOGW(TAG, "→ Check broker IP address (should match your Home Assistant IP)");
+                        ESP_LOGW(TAG, "→ Check username/password in web GUI Settings tab");
+                        ESP_LOGW(TAG, "→ Or disable MQTT in Settings to stop connection attempts");
+                    }
                 }
             }
             else

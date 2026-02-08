@@ -71,6 +71,12 @@ void HAMqttClient::mqtt_event_handler(void *handler_args, esp_event_base_t base,
 
     case MQTT_EVENT_ERROR:
         ESP_LOGE(TAG, "MQTT error occurred");
+        if (event->error_handle && event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT)
+        {
+            ESP_LOGE(TAG, "TCP transport error: %d", event->error_handle->esp_tls_last_esp_err);
+            ESP_LOGE(TAG, "→ Check MQTT broker address/port and network connectivity");
+            ESP_LOGE(TAG, "→ Disable MQTT via web GUI if not using Home Assistant");
+        }
         break;
 
     default:
@@ -88,14 +94,16 @@ bool HAMqttClient::begin(const char *broker_uri, const char *username, const cha
 
     ESP_LOGI(TAG, "Initializing MQTT client...");
     ESP_LOGI(TAG, "Broker: %s", broker_uri);
+    ESP_LOGI(TAG, "Username: %s", username && strlen(username) > 0 ? username : "(none)");
 
     esp_mqtt_client_config_t mqtt_cfg = {};
     mqtt_cfg.broker.address.uri = broker_uri;
     mqtt_cfg.credentials.username = username;
     mqtt_cfg.credentials.authentication.password = password;
     mqtt_cfg.session.keepalive = 60;
-    mqtt_cfg.network.reconnect_timeout_ms = 10000;
-    mqtt_cfg.network.disable_auto_reconnect = false;
+    mqtt_cfg.network.timeout_ms = 5000;             // Shorter connection timeout: 5s
+    mqtt_cfg.network.reconnect_timeout_ms = 30000;  // Longer reconnect interval: 30s
+    mqtt_cfg.network.disable_auto_reconnect = true; // Disable aggressive reconnection
 
     mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
     if (!mqtt_client)

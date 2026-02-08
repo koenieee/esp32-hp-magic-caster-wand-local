@@ -577,6 +577,11 @@ static const char index_html[] = R"rawliteral(
                     <button class="button danger" onclick="resetToDefaults()">⚠️ Reset to Defaults</button>
                     <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Clears all settings (WiFi, wand MAC, MQTT)</div>
                 </div>
+                <div style="margin-bottom: 15px; padding-top: 15px; border-top: 1px solid #444;">
+                    <button class="button" onclick="checkNVS()">🔍 Check Saved Settings (NVS)</button>
+                    <div style="font-size: 0.8em; color: #888; margin-top: 5px;">View what's actually stored in memory</div>
+                    <pre id="nvs-debug" style="background: #111; padding: 10px; border-radius: 4px; font-size: 11px; max-height: 200px; overflow-y: auto; display: none; margin-top: 10px;"></pre>
+                </div>
                 <div style="border-top: 1px solid #444; padding-top: 15px;">
                     <button class="button danger" onclick="rebootDevice()">🔄 Reboot Device</button>
                     <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Device will restart in 2 seconds</div>
@@ -1885,8 +1890,30 @@ static const char index_html[] = R"rawliteral(
                 });
         }
         
+        // Check NVS stored values
+        function checkNVS() {
+            const debugDiv = document.getElementById('nvs-debug');
+            fetch('/debug/nvs')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.nvs) {
+                        debugDiv.style.display = 'block';
+                        debugDiv.textContent = JSON.stringify(data.nvs, null, 2);
+                        showToast('NVS values retrieved', 'success');
+                    } else {
+                        showToast('Failed to get NVS values', 'error');
+                    }
+                })
+                .catch(error => {
+                    showToast('Error reading NVS: ' + error, 'error');
+                });
+        }
+        
         // Load WiFi mode when page loads
         loadWifiMode();
+        
+        // Load settings (including MQTT) when page loads
+        loadSettings();
     </script>
 </body>
 </html>
@@ -2283,6 +2310,19 @@ bool WebServer::begin(uint16_t port)
     if (httpd_register_uri_handler(server, &system_get_wifi_mode) != ESP_OK)
     {
         ESP_LOGW(TAG, "System get_wifi_mode handler registration FAILED");
+    }
+
+    httpd_uri_t debug_nvs = {
+        .uri = "/debug/nvs",
+        .method = HTTP_GET,
+        .handler = debug_nvs_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &debug_nvs) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Debug NVS handler registration FAILED");
     }
 
     // Register 404 error handler to intercept gesture image requests
@@ -2989,6 +3029,37 @@ esp_err_t WebServer::settings_get_handler(httpd_req_t *req)
         nvs_close(nvs_handle);
     }
 
+    // Fall back to config.h defaults if NVS is empty (same logic as main.cpp)
+    if (strlen(mqtt_broker) == 0)
+    {
+        snprintf(mqtt_broker, sizeof(mqtt_broker), "mqtt://%s:%d", MQTT_SERVER, MQTT_PORT);
+        ESP_LOGI(TAG, "MQTT broker not in NVS, using config.h default: %s", mqtt_broker);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "MQTT broker loaded from NVS: %s", mqtt_broker);
+    }
+
+    if (strlen(mqtt_username) == 0)
+    {
+        strncpy(mqtt_username, MQTT_USER, sizeof(mqtt_username) - 1);
+        ESP_LOGI(TAG, "MQTT username not in NVS, using config.h default: %s", mqtt_username);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "MQTT username loaded from NVS: %s", mqtt_username);
+    }
+
+    if (strlen(mqtt_password) == 0)
+    {
+        strncpy(mqtt_password, MQTT_PASSWORD, sizeof(mqtt_password) - 1);
+        ESP_LOGI(TAG, "MQTT password not in NVS, using config.h default");
+    }
+    else
+    {
+        ESP_LOGI(TAG, "MQTT password loaded from NVS");
+    }
+
     const uint8_t *gamepad_buttons = usbHID.getSpellGamepadButtons();
     offset += snprintf(buffer + offset, buffer_size - offset, "], \"gamepad_spells\": [");
     for (int i = 0; i < 73; i++)
@@ -3009,8 +3080,87 @@ esp_err_t WebServer::settings_get_handler(httpd_req_t *req)
     httpd_resp_sendstr(req, buffer);
     free(buffer);
 #else
+    // USB HID disabled, but still return MQTT settings
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    bool ha_mqtt_enabled = true;
+    char mqtt_broker[128] = {0};
+    char mqtt_username[64] = {0};
+    char mqtt_password[64] = {0};
+
+    if (err == ESP_OK)
+    {
+        uint8_t ha_mqtt_u8 = 1;
+        nvs_get_u8(nvs_handle, "ha_mqtt_enabled", &ha_mqtt_u8);
+        ha_mqtt_enabled = (ha_mqtt_u8 != 0);
+
+        size_t required_size;
+        err = nvs_get_str(nvs_handle, "mqtt_broker", NULL, &required_size);
+        if (err == ESP_OK && required_size <= sizeof(mqtt_broker))
+        {
+            nvs_get_str(nvs_handle, "mqtt_broker", mqtt_broker, &required_size);
+        }
+
+        err = nvs_get_str(nvs_handle, "mqtt_username", NULL, &required_size);
+        if (err == ESP_OK && required_size <= sizeof(mqtt_username))
+        {
+            nvs_get_str(nvs_handle, "mqtt_username", mqtt_username, &required_size);
+        }
+
+        err = nvs_get_str(nvs_handle, "mqtt_password", NULL, &required_size);
+        if (err == ESP_OK && required_size <= sizeof(mqtt_password))
+        {
+            nvs_get_str(nvs_handle, "mqtt_password", mqtt_password, &required_size);
+        }
+
+        nvs_close(nvs_handle);
+    }
+
+    // Fall back to config.h defaults if NVS is empty
+    if (strlen(mqtt_broker) == 0)
+    {
+        snprintf(mqtt_broker, sizeof(mqtt_broker), "mqtt://%s:%d", MQTT_SERVER, MQTT_PORT);
+        ESP_LOGI(TAG, "MQTT broker not in NVS, using config.h default: %s", mqtt_broker);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "MQTT broker loaded from NVS: %s", mqtt_broker);
+    }
+
+    if (strlen(mqtt_username) == 0)
+    {
+        strncpy(mqtt_username, MQTT_USER, sizeof(mqtt_username) - 1);
+        ESP_LOGI(TAG, "MQTT username not in NVS, using config.h default: %s", mqtt_username);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "MQTT username loaded from NVS: %s", mqtt_username);
+    }
+
+    if (strlen(mqtt_password) == 0)
+    {
+        strncpy(mqtt_password, MQTT_PASSWORD, sizeof(mqtt_password) - 1);
+        ESP_LOGI(TAG, "MQTT password not in NVS, using config.h default");
+    }
+    else
+    {
+        ESP_LOGI(TAG, "MQTT password loaded from NVS");
+    }
+
+    char response[512];
+    snprintf(response, sizeof(response),
+             "{\"status\":\"usb_hid_disabled\","
+             "\"ha_mqtt_enabled\":%s,"
+             "\"mqtt_broker\":\"%s\","
+             "\"mqtt_username\":\"%s\","
+             "\"mqtt_password\":\"%s\"}",
+             ha_mqtt_enabled ? "true" : "false",
+             mqtt_broker,
+             mqtt_username,
+             mqtt_password);
+
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"status\":\"disabled\",\"message\":\"USB HID not enabled\"}");
+    httpd_resp_sendstr(req, response);
 #endif
     return ESP_OK;
 }
@@ -3283,6 +3433,8 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     }
 #endif
 
+    ESP_LOGI(TAG, "Settings save complete. MQTT settings saved to NVS (reboot required to apply)");
+
     // Save to NVS
 #if USE_USB_HID_DEVICE
     if (usbHID.saveSettings())
@@ -3300,8 +3452,123 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 #else
+    // USB HID disabled, but still parse and save MQTT settings
+    // Parse HA MQTT enabled
+    char *ha_mqtt_ptr = strstr(buffer, "\"ha_mqtt_enabled\"");
+    if (ha_mqtt_ptr)
+    {
+        bool enabled = (strstr(ha_mqtt_ptr, "true") != NULL);
+        nvs_handle_t nvs_handle;
+        esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+        if (err == ESP_OK)
+        {
+            nvs_set_u8(nvs_handle, "ha_mqtt_enabled", enabled ? 1 : 0);
+            nvs_commit(nvs_handle);
+            nvs_close(nvs_handle);
+            ESP_LOGI(TAG, "HA MQTT enabled setting saved: %d (restart required)", enabled);
+        }
+    }
+
+    // Parse MQTT broker URI
+    char *mqtt_broker_ptr = strstr(buffer, "\"mqtt_broker\":");
+    if (mqtt_broker_ptr)
+    {
+        mqtt_broker_ptr += strlen("\"mqtt_broker\":");
+        while (*mqtt_broker_ptr == ' ')
+            mqtt_broker_ptr++;
+        if (*mqtt_broker_ptr == '\"')
+        {
+            mqtt_broker_ptr++;
+            char *end_quote = strchr(mqtt_broker_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - mqtt_broker_ptr;
+                char mqtt_broker[128] = {0};
+                if (len < sizeof(mqtt_broker))
+                {
+                    strncpy(mqtt_broker, mqtt_broker_ptr, len);
+                    nvs_handle_t nvs_handle;
+                    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+                    if (err == ESP_OK)
+                    {
+                        nvs_set_str(nvs_handle, "mqtt_broker", mqtt_broker);
+                        nvs_commit(nvs_handle);
+                        nvs_close(nvs_handle);
+                        ESP_LOGI(TAG, "MQTT broker saved: %s", mqtt_broker);
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse MQTT username
+    char *mqtt_username_ptr = strstr(buffer, "\"mqtt_username\":");
+    if (mqtt_username_ptr)
+    {
+        mqtt_username_ptr += strlen("\"mqtt_username\":");
+        while (*mqtt_username_ptr == ' ')
+            mqtt_username_ptr++;
+        if (*mqtt_username_ptr == '\"')
+        {
+            mqtt_username_ptr++;
+            char *end_quote = strchr(mqtt_username_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - mqtt_username_ptr;
+                char mqtt_username[64] = {0};
+                if (len < sizeof(mqtt_username))
+                {
+                    strncpy(mqtt_username, mqtt_username_ptr, len);
+                    nvs_handle_t nvs_handle;
+                    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+                    if (err == ESP_OK)
+                    {
+                        nvs_set_str(nvs_handle, "mqtt_username", mqtt_username);
+                        nvs_commit(nvs_handle);
+                        nvs_close(nvs_handle);
+                        ESP_LOGI(TAG, "MQTT username saved");
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse MQTT password
+    char *mqtt_password_ptr = strstr(buffer, "\"mqtt_password\":");
+    if (mqtt_password_ptr)
+    {
+        mqtt_password_ptr += strlen("\"mqtt_password\":");
+        while (*mqtt_password_ptr == ' ')
+            mqtt_password_ptr++;
+        if (*mqtt_password_ptr == '\"')
+        {
+            mqtt_password_ptr++;
+            char *end_quote = strchr(mqtt_password_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - mqtt_password_ptr;
+                char mqtt_password[64] = {0};
+                if (len < sizeof(mqtt_password))
+                {
+                    strncpy(mqtt_password, mqtt_password_ptr, len);
+                    nvs_handle_t nvs_handle;
+                    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+                    if (err == ESP_OK)
+                    {
+                        nvs_set_str(nvs_handle, "mqtt_password", mqtt_password);
+                        nvs_commit(nvs_handle);
+                        nvs_close(nvs_handle);
+                        ESP_LOGI(TAG, "MQTT password saved");
+                    }
+                }
+            }
+        }
+    }
+
+    ESP_LOGI(TAG, "MQTT settings saved to NVS (USB HID disabled, restart required to apply)");
+
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"status\":\"disabled\",\"message\":\"USB HID not enabled\"}");
+    httpd_resp_sendstr(req, "{\"status\":\"success\",\"message\":\"MQTT settings saved (restart required)\"}");
     free(buffer);
     return ESP_OK;
 #endif
@@ -3949,6 +4216,89 @@ esp_err_t WebServer::system_get_wifi_mode_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, response);
+
+    return ESP_OK;
+}
+
+esp_err_t WebServer::debug_nvs_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "debug_nvs_handler called - showing stored NVS values");
+
+    char response[1024];
+    char wifi_ssid[32] = {0};
+    char wifi_password[64] = {0};
+    char wand_mac[18] = {0};
+    char mqtt_broker[128] = {0};
+    char mqtt_username[64] = {0};
+    char mqtt_password[64] = {0};
+    bool ha_mqtt_enabled = false;
+    bool force_ap_mode = false;
+
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err == ESP_OK)
+    {
+        size_t required_size;
+
+        // WiFi credentials
+        required_size = sizeof(wifi_ssid);
+        nvs_get_str(nvs_handle, "wifi_ssid", wifi_ssid, &required_size);
+
+        required_size = sizeof(wifi_password);
+        nvs_get_str(nvs_handle, "wifi_password", wifi_password, &required_size);
+
+        // Wand MAC
+        required_size = sizeof(wand_mac);
+        nvs_get_str(nvs_handle, "wand_mac", wand_mac, &required_size);
+
+        // MQTT settings
+        uint8_t mqtt_enabled = 0;
+        nvs_get_u8(nvs_handle, "ha_mqtt_enabled", &mqtt_enabled);
+        ha_mqtt_enabled = (mqtt_enabled != 0);
+
+        required_size = sizeof(mqtt_broker);
+        nvs_get_str(nvs_handle, "mqtt_broker", mqtt_broker, &required_size);
+
+        required_size = sizeof(mqtt_username);
+        nvs_get_str(nvs_handle, "mqtt_username", mqtt_username, &required_size);
+
+        required_size = sizeof(mqtt_password);
+        nvs_get_str(nvs_handle, "mqtt_password", mqtt_password, &required_size);
+
+        // WiFi mode
+        uint8_t ap_mode = 0;
+        nvs_get_u8(nvs_handle, "force_ap_mode", &ap_mode);
+        force_ap_mode = (ap_mode != 0);
+
+        nvs_close(nvs_handle);
+    }
+
+    snprintf(response, sizeof(response),
+             "{\"success\":true,"
+             "\"nvs\":{"
+             "\"wifi_ssid\":\"%s\","
+             "\"wifi_password\":\"%s\","
+             "\"wand_mac\":\"%s\","
+             "\"mqtt_broker\":\"%s\","
+             "\"mqtt_username\":\"%s\","
+             "\"mqtt_password\":\"%s\","
+             "\"ha_mqtt_enabled\":%s,"
+             "\"force_ap_mode\":%s"
+             "}}",
+             wifi_ssid,
+             strlen(wifi_password) > 0 ? "***" : "",
+             wand_mac,
+             mqtt_broker,
+             mqtt_username,
+             strlen(mqtt_password) > 0 ? "***" : "",
+             ha_mqtt_enabled ? "true" : "false",
+             force_ap_mode ? "true" : "false");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, response);
+
+    ESP_LOGI(TAG, "NVS Debug: mqtt_broker='%s', mqtt_username='%s', ha_mqtt_enabled=%d",
+             mqtt_broker, mqtt_username, ha_mqtt_enabled);
 
     return ESP_OK;
 }
