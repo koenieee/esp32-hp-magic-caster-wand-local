@@ -1,0 +1,154 @@
+# Home Assistant Automation Examples for Magic Wand
+# Add these to your configuration.yaml or create separate automation files
+
+# Example 1: Lumos - Turn on lights
+automation:
+  - alias: "Wand: Lumos - Lights On"
+    trigger:
+      - platform: mqtt
+        topic: "wand/spell"
+    condition:
+      - condition: template
+        value_template: "{{ trigger.payload_json.spell == 'Lumos' }}"
+      - condition: template
+        value_template: "{{ trigger.payload_json.confidence > 0.7 }}"
+    action:
+      - service: light.turn_on
+        target:
+          entity_id: light.living_room  # Change to your light entity
+        data:
+          brightness: 255
+
+  # Example 2: Nox - Turn off lights
+  - alias: "Wand: Nox - Lights Off"
+    trigger:
+      - platform: mqtt
+        topic: "wand/spell"
+    condition:
+      - condition: template
+        value_template: "{{ trigger.payload_json.spell == 'Nox' }}"
+      - condition: template
+        value_template: "{{ trigger.payload_json.confidence > 0.7 }}"
+    action:
+      - service: light.turn_off
+        target:
+          entity_id: light.living_room
+
+  # Example 3: Incendio - Red lights
+  - alias: "Wand: Incendio - Red Fire"
+    trigger:
+      - platform: mqtt
+        topic: "wand/spell"
+    condition:
+      - condition: template
+        value_template: "{{ trigger.payload_json.spell == 'Incendio' }}"
+      - condition: template
+        value_template: "{{ trigger.payload_json.confidence > 0.7 }}"
+    action:
+      - service: light.turn_on
+        target:
+          entity_id: light.living_room
+        data:
+          brightness: 255
+          rgb_color: [255, 0, 0]  # Red
+      - service: notify.persistent_notification
+        data:
+          message: "🔥 Incendio cast with {{ (trigger.payload_json.confidence * 100) | round }}% confidence!"
+
+  # Example 4: Aguamenti - Blue water effect
+  - alias: "Wand: Aguamenti - Blue Water"
+    trigger:
+      - platform: mqtt
+        topic: "wand/spell"
+    condition:
+      - condition: template
+        value_template: "{{ trigger.payload_json.spell == 'Aguamenti' }}"
+    action:
+      - service: light.turn_on
+        target:
+          entity_id: light.living_room
+        data:
+          brightness: 200
+          rgb_color: [0, 100, 255]  # Blue
+
+  # Example 5: Alohomora - Unlock door
+  - alias: "Wand: Alohomora - Unlock"
+    trigger:
+      - platform: mqtt
+        topic: "wand/spell"
+    condition:
+      - condition: template
+        value_template: "{{ trigger.payload_json.spell == 'Alohomora' }}"
+    action:
+      - service: lock.unlock
+        target:
+          entity_id: lock.front_door  # Change to your lock entity
+      - service: notify.mobile_app
+        data:
+          message: "Door unlocked by magic wand!"
+
+  # Example 6: Protego - Activate security
+  - alias: "Wand: Protego - Arm Security"
+    trigger:
+      - platform: mqtt
+        topic: "wand/spell"
+    condition:
+      - condition: template
+        value_template: "{{ trigger.payload_json.spell == 'Protego' }}"
+    action:
+      - service: alarm_control_panel.alarm_arm_home
+        target:
+          entity_id: alarm_control_panel.home_alarm
+      - service: light.turn_on
+        target:
+          entity_id: light.living_room
+        data:
+          brightness: 100
+          rgb_color: [0, 0, 255]  # Blue shield
+
+  # Example 7: Low battery notification
+  - alias: "Wand: Low Battery Alert"
+    trigger:
+      - platform: mqtt
+        topic: "wand/battery"
+    condition:
+      - condition: template
+        value_template: "{{ trigger.payload_json.level | int < 20 }}"
+    action:
+      - service: notify.persistent_notification
+        data:
+          title: "⚡ Wand Battery Low"
+          message: "Magic wand battery at {{ trigger.payload_json.level }}%"
+
+# Sensor to track last spell (alternative to event entity)
+sensor:
+  - platform: mqtt
+    name: "Wand Last Spell"
+    state_topic: "wand/spell"
+    value_template: "{{ value_json.spell }}"
+    json_attributes_topic: "wand/spell"
+    json_attributes_template: "{{ {'confidence': value_json.confidence | float | round(3)} | tojson }}"
+
+  - platform: mqtt
+    name: "Wand Battery Level"
+    state_topic: "wand/battery"
+    value_template: "{{ value_json.level }}"
+    unit_of_measurement: "%"
+    device_class: battery
+
+# Script: All available spells list
+script:
+  cast_random_spell:
+    alias: "Cast Random Spell Effect"
+    sequence:
+      - choose:
+          - conditions: "{{ states('sensor.wand_last_spell') == 'Lumos' }}"
+            sequence:
+              - service: light.turn_on
+                target:
+                  area_id: living_room
+          - conditions: "{{ states('sensor.wand_last_spell') == 'Nox' }}"
+            sequence:
+              - service: light.turn_off
+                target:
+                  area_id: living_room

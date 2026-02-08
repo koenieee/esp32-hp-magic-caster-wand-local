@@ -189,15 +189,54 @@ void onSpellDetected(const char *spell_name, float confidence)
 #endif
 
 #if ENABLE_HOME_ASSISTANT
+    ESP_LOGI(TAG, "🎯 Spell detected in callback - processing...");
+
     // Broadcast to web clients
+    ESP_LOGI(TAG, "  → Broadcasting to web clients");
     webServer.broadcastSpell(spell_name, confidence);
 
     // Send to Home Assistant via MQTT (only if connected)
+    ESP_LOGI(TAG, "  → Checking MQTT connection (isConnected=%d)", mqttClient.isConnected());
     if (mqttClient.isConnected())
     {
+        ESP_LOGI(TAG, "  → Calling mqttClient.publishSpell()");
         mqttClient.publishSpell(spell_name, confidence);
     }
+    else
+    {
+        ESP_LOGW(TAG, "  ⚠ MQTT not connected - skipping MQTT publish");
+    }
 #endif
+}
+
+// Callback when MQTT connects - check if wand is already connected and publish its info
+void onMQTTConnected()
+{
+    ESP_LOGI(TAG, "MQTT connected callback triggered");
+
+    // Check if wand is already connected
+    if (wandClient.isConnected())
+    {
+        ESP_LOGI(TAG, "Wand already connected - publishing info to Home Assistant...");
+
+        // Request fresh wand info
+        if (wandClient.requestWandInfo())
+        {
+            vTaskDelay(pdMS_TO_TICKS(300));
+
+            mqttClient.publishWandInfo(
+                wandClient.getFirmwareVersion(),
+                wandClient.getSerialNumber(),
+                wandClient.getSKU(),
+                wandClient.getDeviceId(),
+                wandClient.getWandType(),
+                wandClient.getWandMacAddress());
+        }
+    }
+    else
+    {
+        ESP_LOGI(TAG, "No wand connected yet");
+    }
 }
 
 // Callback when connection state changes
@@ -206,12 +245,44 @@ void onConnectionChange(bool connected)
     if (connected)
     {
         ESP_LOGI(TAG, "✓ Connected to wand");
+
+        // Request wand information (firmware, serial, etc.)
+        if (wandClient.requestWandInfo())
+        {
+            vTaskDelay(pdMS_TO_TICKS(500)); // Give time for info to be retrieved
+
+            // Publish wand info to Home Assistant
+#if ENABLE_HOME_ASSISTANT
+            if (mqttClient.isConnected())
+            {
+                ESP_LOGI(TAG, "Publishing wand information to Home Assistant...");
+                mqttClient.publishWandInfo(
+                    wandClient.getFirmwareVersion(),
+                    wandClient.getSerialNumber(),
+                    wandClient.getSKU(),
+                    wandClient.getDeviceId(),
+                    wandClient.getWandType(),
+                    wandClient.getWandMacAddress());
+            }
+#endif
+        }
+
         // Notify web GUI
         webServer.broadcastWandStatus(true);
     }
     else
     {
         ESP_LOGI(TAG, "✗ Disconnected from wand");
+
+        // Publish disconnected status to Home Assistant
+#if ENABLE_HOME_ASSISTANT
+        if (mqttClient.isConnected())
+        {
+            ESP_LOGI(TAG, "Publishing wand disconnection to Home Assistant...");
+            mqttClient.publishWandDisconnected();
+        }
+#endif
+
         // Check if this was a user-initiated disconnect
         if (wandClient.isUserDisconnectRequested())
         {
@@ -852,6 +923,9 @@ extern "C" void app_main()
                     {
                         ESP_LOGI(TAG, "✓ MQTT client initialized for Home Assistant");
                         ESP_LOGI(TAG, "   Connection errors will retry every 30 seconds");
+
+                        // Register callback to publish wand info if already connected
+                        mqttClient.onConnected(onMQTTConnected);
                     }
                     else
                     {
@@ -1017,6 +1091,30 @@ extern "C" void app_main()
             {
                 ESP_LOGW(TAG, "WARNING: Failed to request wand information");
             }
+            else
+            {
+                // Wait for info to be retrieved
+                vTaskDelay(300 / portTICK_PERIOD_MS);
+
+                // Publish wand info to Home Assistant
+#if ENABLE_HOME_ASSISTANT
+                if (mqttClient.isConnected())
+                {
+                    ESP_LOGI(TAG, "Publishing wand info to Home Assistant...");
+                    mqttClient.publishWandInfo(
+                        wandClient.getFirmwareVersion(),
+                        wandClient.getSerialNumber(),
+                        wandClient.getSKU(),
+                        wandClient.getDeviceId(),
+                        wandClient.getWandType(),
+                        wandClient.getWandMacAddress());
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "MQTT not connected - wand info not published");
+                }
+#endif
+            }
 
             // Wait before starting IMU streaming
             vTaskDelay(500 / portTICK_PERIOD_MS);
@@ -1145,6 +1243,26 @@ extern "C" void app_main()
                     {
                         ESP_LOGW(TAG, "WARNING: Failed to request wand information");
                     }
+                    else
+                    {
+                        // Wait for info to be retrieved
+                        vTaskDelay(300 / portTICK_PERIOD_MS);
+
+                        // Publish wand info to Home Assistant
+#if ENABLE_HOME_ASSISTANT
+                        if (mqttClient.isConnected())
+                        {
+                            ESP_LOGI(TAG, "Publishing wand info to Home Assistant...");
+                            mqttClient.publishWandInfo(
+                                wandClient.getFirmwareVersion(),
+                                wandClient.getSerialNumber(),
+                                wandClient.getSKU(),
+                                wandClient.getDeviceId(),
+                                wandClient.getWandType(),
+                                wandClient.getWandMacAddress());
+                        }
+#endif
+                    }
 
                     // Wait before starting IMU streaming
                     vTaskDelay(500 / portTICK_PERIOD_MS);
@@ -1219,15 +1337,23 @@ extern "C" void app_main()
             if (battery_check_counter >= BATTERY_CHECK_INTERVAL)
             {
                 uint8_t battery = wandClient.getBatteryLevel();
+                ESP_LOGI(TAG, "🔋 Battery check: level=%d%%", battery);
                 if (battery > 0)
                 {
 #if ENABLE_HOME_ASSISTANT
+                    ESP_LOGI(TAG, "  → Broadcasting battery to web clients");
                     webServer.broadcastBattery(battery);
 
                     // Publish to Home Assistant (only if connected)
+                    ESP_LOGI(TAG, "  → Checking MQTT connection (isConnected=%d)", mqttClient.isConnected());
                     if (mqttClient.isConnected())
                     {
+                        ESP_LOGI(TAG, "  → Calling mqttClient.publishBattery()");
                         mqttClient.publishBattery(battery);
+                    }
+                    else
+                    {
+                        ESP_LOGW(TAG, "  ⚠ MQTT not connected - skipping battery publish");
                     }
 #endif
                 }

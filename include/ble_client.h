@@ -163,6 +163,7 @@ public:
     const char *getSKU() const { return sku; }
     const char *getDeviceId() const { return device_id; }
     const char *getWandType() const { return wand_type; }
+    const char *getWandMacAddress() const;
 
     // Status
     bool isStreaming() const { return imuStreaming; }

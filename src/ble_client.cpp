@@ -1017,7 +1017,7 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                     dy = usbHID.getGamepadInvertY() ? -dy : dy;
                 }
 #else
-                dy = -dy; // Default: inverted
+                dy = -dy;     // Default: inverted
 #endif
                 accum_dx += dx;
                 accum_dy += dy;
@@ -1135,6 +1135,15 @@ bool WandBLEClient::requestWandInfo()
     vTaskDelay(pdMS_TO_TICKS(50)); // Small delay between commands
     success &= wandCommands.requestProductInfo();
     return success;
+}
+
+const char *WandBLEClient::getWandMacAddress() const
+{
+    static char mac_str[18]; // "XX:XX:XX:XX:XX:XX" + null terminator
+    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+             peer_addr.val[5], peer_addr.val[4], peer_addr.val[3],
+             peer_addr.val[2], peer_addr.val[1], peer_addr.val[0]);
+    return mac_str;
 }
 
 void WandBLEClient::processFirmwareVersion(const uint8_t *data, size_t length)
