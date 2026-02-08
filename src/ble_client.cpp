@@ -137,6 +137,7 @@ WandBLEClient::WandBLEClient()
       lastButtonState(0),
       last_battery_level(0),
       userDisconnectRequested(false),
+      needsInitialization(false),
       writeIndex(0),
       readIndex(0),
       processingTask(nullptr),
@@ -403,7 +404,12 @@ int WandBLEClient::gap_event_handler(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "Connected to wand!");
             client->conn_handle = event->connect.conn_handle;
             client->connected = true;
-            client->userDisconnectRequested = false; // Clear flag on successful connection
+
+            // Clear flags on successful connection (unless this was a web-initiated connection)
+            if (!client->needsInitialization)
+            {
+                client->userDisconnectRequested = false;
+            }
 
             if (client->connectionCallback)
             {

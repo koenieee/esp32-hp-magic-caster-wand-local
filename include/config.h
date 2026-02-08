@@ -25,7 +25,7 @@
 #define USE_WIFI_AP_MODE 0 // 0 = standalone AP mode, 1 = connect to existing WiFi
 
 // WiFi Access Point Configuration (when USE_WIFI_AP_MODE = 0)
-#define AP_SSID "MagicWand-ESP32"
+#define AP_SSID "HP-esp32-wand-gateway"
 #define AP_PASSWORD "" // Empty = open network (no password required)
 #define AP_CHANNEL 1
 #define AP_MAX_CONNECTIONS 4

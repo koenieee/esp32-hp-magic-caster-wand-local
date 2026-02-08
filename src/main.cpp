@@ -388,41 +388,113 @@ extern "C" void app_main()
         uint8_t ap_channel = 6;       // Default channel
         bool hotspot_enabled = false; // By default use config.h values
 
+        // Check for saved WiFi station credentials
+        char wifi_sta_ssid[32] = {0};
+        char wifi_sta_password[64] = {0};
+        bool has_wifi_credentials = false;
+
         nvs_handle_t nvs_handle;
         esp_err_t nvs_err = nvs_open("storage", NVS_READONLY, &nvs_handle);
         if (nvs_err == ESP_OK)
         {
+            // Load hotspot settings
             uint8_t hotspot_en = 0;
             nvs_get_u8(nvs_handle, "hotspot_enabled", &hotspot_en);
             hotspot_enabled = (hotspot_en != 0);
 
             size_t required_size;
-            nvs_err = nvs_get_str(nvs_handle, "hotspot_ssid", NULL, &required_size);
-            if (nvs_err == ESP_OK && required_size > 0 && required_size <= sizeof(ap_ssid))
-            {
-                nvs_get_str(nvs_handle, "hotspot_ssid", ap_ssid, &required_size);
-            }
 
-            nvs_err = nvs_get_str(nvs_handle, "hotspot_password", NULL, &required_size);
-            if (nvs_err == ESP_OK && required_size > 0 && required_size <= sizeof(ap_password))
-            {
-                nvs_get_str(nvs_handle, "hotspot_password", ap_password, &required_size);
-            }
+            // Load hotspot SSID
+            required_size = sizeof(ap_ssid);
+            nvs_get_str(nvs_handle, "hotspot_ssid", ap_ssid, &required_size);
 
+            // Load hotspot password
+            required_size = sizeof(ap_password);
+            nvs_get_str(nvs_handle, "hotspot_password", ap_password, &required_size);
+
+            // Load hotspot channel
             uint8_t channel = 6;
-            nvs_get_u8(nvs_handle, "hotspot_channel", &channel);
-            if (channel >= 1 && channel <= 13)
+            if (nvs_get_u8(nvs_handle, "hotspot_channel", &channel) == ESP_OK)
             {
-                ap_channel = channel;
+                if (channel >= 1 && channel <= 13)
+                {
+                    ap_channel = channel;
+                }
+            }
+
+            // Check for WiFi station credentials
+            nvs_err = nvs_get_str(nvs_handle, "wifi_ssid", NULL, &required_size);
+            if (nvs_err == ESP_OK && required_size > 0 && required_size <= sizeof(wifi_sta_ssid))
+            {
+                nvs_get_str(nvs_handle, "wifi_ssid", wifi_sta_ssid, &required_size);
+                if (strlen(wifi_sta_ssid) > 0)
+                {
+                    has_wifi_credentials = true;
+                    // Load password too
+                    required_size = sizeof(wifi_sta_password);
+                    nvs_get_str(nvs_handle, "wifi_password", wifi_sta_password, &required_size);
+                }
             }
 
             nvs_close(nvs_handle);
         }
 
-        // Use config.h defaults if NVS values are empty or hotspot not enabled
-        if (!hotspot_enabled || strlen(ap_ssid) == 0)
+        // If WiFi credentials are saved, try to connect as station first
+        if (has_wifi_credentials)
+        {
+            ESP_LOGI(TAG, "Found saved WiFi credentials for: %s", wifi_sta_ssid);
+            ESP_LOGI(TAG, "Attempting to connect to WiFi network...");
+
+            esp_netif_create_default_wifi_sta();
+
+            wifi_config_t wifi_config = {};
+            strncpy((char *)wifi_config.sta.ssid, wifi_sta_ssid, sizeof(wifi_config.sta.ssid) - 1);
+            strncpy((char *)wifi_config.sta.password, wifi_sta_password, sizeof(wifi_sta_password) - 1);
+            wifi_config.sta.ssid[sizeof(wifi_config.sta.ssid) - 1] = '\0';
+            wifi_config.sta.password[sizeof(wifi_config.sta.password) - 1] = '\0';
+
+            ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+            ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+            ESP_ERROR_CHECK(esp_wifi_start());
+            ESP_ERROR_CHECK(esp_wifi_connect());
+
+            ESP_LOGI(TAG, "Connecting to %s...", wifi_sta_ssid);
+
+            // Wait for connection (timeout after 10 seconds)
+            int wait_count = 0;
+            while (wait_count < 20) // 20 * 500ms = 10 seconds
+            {
+                wifi_ap_record_t ap_info;
+                if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK)
+                {
+                    ESP_LOGI(TAG, "✓ Connected to WiFi: %s", wifi_sta_ssid);
+                    ESP_LOGI(TAG, "✓ WiFi Station mode active");
+                    // Successfully connected - continue without falling back to AP
+                    goto wifi_setup_complete;
+                }
+                vTaskDelay(pdMS_TO_TICKS(500));
+                wait_count++;
+            }
+
+            // Connection failed - fall back to AP mode
+            ESP_LOGW(TAG, "Failed to connect to %s, falling back to AP mode", wifi_sta_ssid);
+            esp_wifi_stop();
+            esp_wifi_deinit();
+
+            // Reinitialize for AP mode
+            wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+            ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+        }
+
+        // Use config.h defaults for AP SSID if not set in NVS
+        if (strlen(ap_ssid) == 0)
         {
             strncpy(ap_ssid, AP_SSID, sizeof(ap_ssid) - 1);
+        }
+
+        // Use config.h defaults for AP password if not set in NVS
+        if (strlen(ap_password) == 0)
+        {
             strncpy(ap_password, AP_PASSWORD, sizeof(ap_password) - 1);
         }
 
@@ -435,6 +507,8 @@ extern "C" void app_main()
         wifi_config.ap.max_connection = AP_MAX_CONNECTIONS;
         wifi_config.ap.beacon_interval = 100;
 
+        ESP_LOGI(TAG, "Configuring AP: SSID=%s, password_len=%d", ap_ssid, strlen(ap_password));
+
         // Use WPA2 security (Android often refuses open networks)
         if (strlen(ap_password) >= 8)
         {
@@ -442,11 +516,13 @@ extern "C" void app_main()
             wifi_config.ap.password[sizeof(wifi_config.ap.password) - 1] = '\0';
             wifi_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
             wifi_config.ap.pairwise_cipher = WIFI_CIPHER_TYPE_CCMP;
+            ESP_LOGI(TAG, "AP mode: WPA2-PSK with password");
         }
         else
         {
             wifi_config.ap.authmode = WIFI_AUTH_OPEN;
             wifi_config.ap.pairwise_cipher = WIFI_CIPHER_TYPE_NONE;
+            ESP_LOGI(TAG, "AP mode: OPEN (no password - password too short)");
         }
         wifi_config.ap.ssid_hidden = 0; // Broadcast SSID
 
@@ -477,19 +553,78 @@ extern "C" void app_main()
             ESP_LOGI(TAG, "Password: %s", ap_password);
         }
         ESP_LOGI(TAG, "Then open browser: http://192.168.4.1/");
+
+    wifi_setup_complete:
+        // WiFi setup complete (either STA or AP mode)
+        ESP_LOGI(TAG, "WiFi initialization complete");
 #else
-        // Station Mode - Connect to existing WiFi network
-        if (strcmp(WIFI_SSID, "your_wifi_ssid") != 0)
+        // Station Mode with AP fallback
+        // Register WiFi event handler
+        ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+
+        // Set country code for better compatibility
+        wifi_country_t country = {
+            .cc = "US",
+            .schan = 1,
+            .nchan = 11,
+            .max_tx_power = 20,
+            .policy = WIFI_COUNTRY_POLICY_AUTO};
+
+        // Load WiFi credentials from NVS
+        char wifi_sta_ssid[32] = {0};
+        char wifi_sta_password[64] = {0};
+        bool has_nvs_wifi = false;
+        bool wifi_connected = false;
+        bool force_ap_mode = false;
+
+        nvs_handle_t nvs_wifi;
+        esp_err_t nvs_err = nvs_open("storage", NVS_READONLY, &nvs_wifi);
+        if (nvs_err == ESP_OK)
+        {
+            // Check if forced AP mode is enabled
+            uint8_t ap_mode = 0;
+            nvs_err = nvs_get_u8(nvs_wifi, "force_ap_mode", &ap_mode);
+            if (nvs_err == ESP_OK && ap_mode == 1)
+            {
+                force_ap_mode = true;
+                ESP_LOGI(TAG, "✓ Forced AP mode enabled via NVS");
+            }
+
+            // Load WiFi station credentials
+            size_t required_size = sizeof(wifi_sta_ssid);
+            nvs_err = nvs_get_str(nvs_wifi, "wifi_ssid", wifi_sta_ssid, &required_size);
+            if (nvs_err == ESP_OK && strlen(wifi_sta_ssid) > 0)
+            {
+                has_nvs_wifi = true;
+                required_size = sizeof(wifi_sta_password);
+                nvs_get_str(nvs_wifi, "wifi_password", wifi_sta_password, &required_size);
+                ESP_LOGI(TAG, "✓ Using WiFi credentials from NVS: %s", wifi_sta_ssid);
+            }
+
+            nvs_close(nvs_wifi);
+        }
+
+        // Fall back to config.h if no NVS credentials
+        if (!has_nvs_wifi && strcmp(WIFI_SSID, "your_wifi_ssid") != 0)
+        {
+            strncpy(wifi_sta_ssid, WIFI_SSID, sizeof(wifi_sta_ssid) - 1);
+            strncpy(wifi_sta_password, WIFI_PASS, sizeof(wifi_sta_password) - 1);
+            ESP_LOGI(TAG, "Using WiFi credentials from config.h: %s", wifi_sta_ssid);
+        }
+
+        // Try to connect to WiFi if we have credentials AND not forced to AP mode
+        if (strlen(wifi_sta_ssid) > 0 && !force_ap_mode)
         {
             ESP_LOGI(TAG, "Initializing WiFi Station for Home Assistant...");
             esp_netif_create_default_wifi_sta();
 
             wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
             ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+            ESP_ERROR_CHECK(esp_wifi_set_country(&country));
 
             wifi_config_t wifi_config = {};
-            strncpy((char *)wifi_config.sta.ssid, WIFI_SSID, sizeof(wifi_config.sta.ssid) - 1);
-            strncpy((char *)wifi_config.sta.password, WIFI_PASS, sizeof(wifi_config.sta.password) - 1);
+            strncpy((char *)wifi_config.sta.ssid, wifi_sta_ssid, sizeof(wifi_config.sta.ssid) - 1);
+            strncpy((char *)wifi_config.sta.password, wifi_sta_password, sizeof(wifi_config.sta.password) - 1);
             wifi_config.sta.ssid[sizeof(wifi_config.sta.ssid) - 1] = '\0';
             wifi_config.sta.password[sizeof(wifi_config.sta.password) - 1] = '\0';
 
@@ -498,11 +633,105 @@ extern "C" void app_main()
             ESP_ERROR_CHECK(esp_wifi_start());
             ESP_ERROR_CHECK(esp_wifi_connect());
 
-            ESP_LOGI(TAG, "WiFi connecting to %s...", WIFI_SSID);
-
-            // Wait for WiFi connection (non-blocking)
+            ESP_LOGI(TAG, "WiFi connecting to %s...", wifi_sta_ssid);
             ESP_LOGI(TAG, "Waiting for WiFi connection...");
-            vTaskDelay(5000 / portTICK_PERIOD_MS);
+
+            // Wait for connection (timeout after 10 seconds)
+            int wait_count = 0;
+            while (wait_count < 20) // 20 * 500ms = 10 seconds
+            {
+                wifi_ap_record_t ap_info;
+                if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK)
+                {
+                    ESP_LOGI(TAG, "✓ Connected to WiFi: %s", wifi_sta_ssid);
+                    ESP_LOGI(TAG, "✓ WiFi Station mode active");
+                    wifi_connected = true;
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(500));
+                wait_count++;
+            }
+
+            if (!wifi_connected)
+            {
+                ESP_LOGW(TAG, "Failed to connect to %s, falling back to AP mode", wifi_sta_ssid);
+                esp_wifi_stop();
+                esp_wifi_deinit();
+            }
+        }
+
+        // Start AP mode if no WiFi credentials or WiFi connection failed
+        if (strlen(wifi_sta_ssid) == 0 || !wifi_connected || force_ap_mode)
+        {
+            if (force_ap_mode)
+            {
+                ESP_LOGI(TAG, "Starting AP mode (forced via WiFi mode switcher)...");
+            }
+            else if (!wifi_connected && strlen(wifi_sta_ssid) > 0)
+            {
+                ESP_LOGI(TAG, "Starting AP mode as fallback...");
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Starting AP mode (no WiFi credentials)...");
+            }
+
+            // Create AP netif if not already created
+            if (!wifi_connected)
+            {
+                esp_netif_create_default_wifi_ap();
+                wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+                ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+                ESP_ERROR_CHECK(esp_wifi_set_country(&country));
+            }
+
+            // Configure AP with default settings from config.h
+            wifi_config_t wifi_config = {};
+            strncpy((char *)wifi_config.ap.ssid, AP_SSID, sizeof(wifi_config.ap.ssid) - 1);
+            wifi_config.ap.ssid[sizeof(wifi_config.ap.ssid) - 1] = '\0';
+            wifi_config.ap.ssid_len = strlen((char *)wifi_config.ap.ssid);
+            wifi_config.ap.channel = AP_CHANNEL;
+            wifi_config.ap.max_connection = AP_MAX_CONNECTIONS;
+            wifi_config.ap.beacon_interval = 100;
+
+            // Use WPA2 security if password is set in config.h, otherwise open
+            if (strlen(AP_PASSWORD) >= 8)
+            {
+                strncpy((char *)wifi_config.ap.password, AP_PASSWORD, sizeof(wifi_config.ap.password) - 1);
+                wifi_config.ap.password[sizeof(wifi_config.ap.password) - 1] = '\0';
+                wifi_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+                wifi_config.ap.pairwise_cipher = WIFI_CIPHER_TYPE_CCMP;
+                ESP_LOGI(TAG, "AP mode: WPA2-PSK with password");
+            }
+            else
+            {
+                wifi_config.ap.authmode = WIFI_AUTH_OPEN;
+                wifi_config.ap.pairwise_cipher = WIFI_CIPHER_TYPE_NONE;
+                ESP_LOGI(TAG, "AP mode: OPEN (no password)");
+            }
+            wifi_config.ap.ssid_hidden = 0;
+
+            ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+            ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+            ESP_ERROR_CHECK(esp_wifi_start());
+
+            ESP_LOGI(TAG, "✓ WiFi AP started: %s", AP_SSID);
+            ESP_LOGI(TAG, "  Channel: %d (2.4GHz)", AP_CHANNEL);
+            if (strlen(AP_PASSWORD) >= 8)
+            {
+                ESP_LOGI(TAG, "  Security: WPA2-PSK");
+            }
+            else
+            {
+                ESP_LOGI(TAG, "  Security: Open (no password)");
+            }
+            ESP_LOGI(TAG, "  IP Address: 192.168.4.1");
+            ESP_LOGI(TAG, "Connect your device to '%s' WiFi network", AP_SSID);
+        }
+
+        // Continue with MQTT setup if WiFi is connected
+        if (wifi_connected)
+        {
 
             // Check if MQTT is enabled in NVS settings
             bool ha_mqtt_enabled = true; // Default: enabled
@@ -585,7 +814,7 @@ extern "C" void app_main()
         }
         else
         {
-            ESP_LOGI(TAG, "Home Assistant disabled (WiFi not configured)");
+            ESP_LOGI(TAG, "Home Assistant disabled (no WiFi connection - using AP mode)");
         }
 #endif
     } // End of net_err == ESP_OK check
@@ -784,8 +1013,11 @@ extern "C" void app_main()
 
     while (1)
     {
-        // Check connection status (only try to reconnect if we have a valid configured MAC)
-        if (!wandClient.isConnected() && (mac_from_nvs || strcmp(WAND_MAC_ADDRESS, "C2:BD:5D:3C:67:4E") != 0))
+        // Check connection status (only try to reconnect if we have a valid configured MAC and not user-initiated disconnect)
+        if (!wandClient.isConnected() &&
+            !wandClient.isUserDisconnectRequested() &&
+            !wandClient.getNeedsInitialization() &&
+            (mac_from_nvs || strcmp(WAND_MAC_ADDRESS, "C2:BD:5D:3C:67:4E") != 0))
         {
             // After 3 failed attempts, wait much longer to give WiFi priority
             if (reconnect_attempts >= MAX_RECONNECT_ATTEMPTS)
@@ -796,31 +1028,103 @@ extern "C" void app_main()
             }
 
             ESP_LOGW(TAG, "Connection lost, attempting reconnect... (attempt %d/%d)", reconnect_attempts + 1, MAX_RECONNECT_ATTEMPTS);
-            vTaskDelay(30000 / portTICK_PERIOD_MS); // Wait 30 seconds before reconnect attempt
 
-            // Attempt to connect
-            wandClient.connect(wand_mac);
-            reconnect_attempts++;
-
-            // Wait for connection to establish
-            ESP_LOGI(TAG, "Waiting for connection...");
-            vTaskDelay(10000 / portTICK_PERIOD_MS); // Wait 10 seconds for connection
-
-            // Check if connection succeeded
-            if (wandClient.isConnected())
+            // Wait 30 seconds before reconnect attempt, but check periodically if user connected via web
+            for (int i = 0; i < 300; i++) // 300 * 100ms = 30 seconds
             {
-                reconnect_attempts = 0; // Reset on successful connection
-                ESP_LOGI(TAG, "Reconnected! Waiting for service discovery...");
-                vTaskDelay(5000 / portTICK_PERIOD_MS);
+                vTaskDelay(100 / portTICK_PERIOD_MS);
+                // If user connected via web during wait, abort auto-reconnect
+                if (wandClient.isConnected() || wandClient.getNeedsInitialization())
+                {
+                    ESP_LOGI(TAG, "Web connection detected, aborting auto-reconnect");
+                    reconnect_attempts = 0; // Reset counter
+                    break;
+                }
+            }
 
-                // Re-initialize button thresholds on reconnect
+            // Only attempt reconnect if still disconnected
+            if (!wandClient.isConnected())
+            {
+                // Reload MAC from NVS in case it changed via web interface
+                char reconnect_mac[18] = {0};
+                nvs_handle_t nvs_reconnect;
+                if (nvs_open("storage", NVS_READONLY, &nvs_reconnect) == ESP_OK)
+                {
+                    size_t mac_len = sizeof(reconnect_mac);
+                    if (nvs_get_str(nvs_reconnect, "wand_mac", reconnect_mac, &mac_len) != ESP_OK || reconnect_mac[0] == '\0')
+                    {
+                        // Fall back to original wand_mac if NVS read fails
+                        strncpy(reconnect_mac, wand_mac, sizeof(reconnect_mac) - 1);
+                    }
+                    nvs_close(nvs_reconnect);
+                }
+                else
+                {
+                    strncpy(reconnect_mac, wand_mac, sizeof(reconnect_mac) - 1);
+                }
+
+                // Attempt to connect with current MAC
+                wandClient.connect(reconnect_mac);
+                reconnect_attempts++;
+
+                // Wait for connection to establish
+                ESP_LOGI(TAG, "Waiting for connection...");
+                vTaskDelay(10000 / portTICK_PERIOD_MS); // Wait 10 seconds for connection
+
+                // Check if connection succeeded
+                if (wandClient.isConnected())
+                {
+                    reconnect_attempts = 0; // Reset on successful connection
+                    ESP_LOGI(TAG, "Reconnected! Waiting for service discovery...");
+                    vTaskDelay(5000 / portTICK_PERIOD_MS);
+
+                    // Re-initialize button thresholds on reconnect
+                    if (!wandClient.initButtonThresholds())
+                    {
+                        ESP_LOGW(TAG, "WARNING: Failed to initialize button thresholds after reconnect");
+                    }
+
+                    // Request wand information
+                    ESP_LOGI(TAG, "Requesting wand information...");
+                    if (!wandClient.requestWandInfo())
+                    {
+                        ESP_LOGW(TAG, "WARNING: Failed to request wand information");
+                    }
+
+                    // Wait before starting IMU streaming
+                    vTaskDelay(500 / portTICK_PERIOD_MS);
+
+                    if (wandClient.startIMUStreaming())
+                    {
+                        ESP_LOGI(TAG, "IMU streaming restarted");
+                    }
+
+                    // Clear needsInitialization flag if it was set (web-initiated connection that got auto-reconnected)
+                    wandClient.setNeedsInitialization(false);
+                    battery_check_counter = 0; // Reset battery check on reconnect
+                    keepalive_counter = 0;     // Reset keep-alive on reconnect
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "Reconnection failed, will retry...");
+                }
+            }
+        }
+        else
+        {
+            // Connected - check if initialization is needed (after web interface connection)
+            if (wandClient.getNeedsInitialization())
+            {
+                ESP_LOGI(TAG, "Wand connected via web interface - running initialization...");
+                vTaskDelay(3000 / portTICK_PERIOD_MS); // Wait for service discovery
+
+                // Initialize button thresholds
                 if (!wandClient.initButtonThresholds())
                 {
-                    ESP_LOGW(TAG, "WARNING: Failed to initialize button thresholds after reconnect");
+                    ESP_LOGW(TAG, "WARNING: Failed to initialize button thresholds");
                 }
 
                 // Request wand information
-                ESP_LOGI(TAG, "Requesting wand information...");
                 if (!wandClient.requestWandInfo())
                 {
                     ESP_LOGW(TAG, "WARNING: Failed to request wand information");
@@ -829,20 +1133,21 @@ extern "C" void app_main()
                 // Wait before starting IMU streaming
                 vTaskDelay(500 / portTICK_PERIOD_MS);
 
-                if (wandClient.startIMUStreaming())
+                if (!wandClient.startIMUStreaming())
                 {
-                    ESP_LOGI(TAG, "IMU streaming restarted");
+                    ESP_LOGW(TAG, "WARNING: Failed to start IMU streaming");
                 }
-                battery_check_counter = 0; // Reset battery check on reconnect
-                keepalive_counter = 0;     // Reset keep-alive on reconnect
+                else
+                {
+                    ESP_LOGI(TAG, "\u2713 Wand initialized successfully");
+                }
+
+                // Clear the flag
+                wandClient.setNeedsInitialization(false);
+                battery_check_counter = 0;
+                keepalive_counter = 0;
             }
-            else
-            {
-                ESP_LOGW(TAG, "Reconnection failed, will retry...");
-            }
-        }
-        else
-        {
+
             // Send keep-alive to prevent connection timeout
             keepalive_counter++;
             if (keepalive_counter >= KEEPALIVE_INTERVAL)

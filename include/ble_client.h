@@ -62,6 +62,7 @@ private:
     uint8_t lastButtonState;
     uint8_t last_battery_level;
     bool userDisconnectRequested; // Track user-initiated disconnects from web interface
+    bool needsInitialization;     // Track if initialization is needed after web-initiated connection
 
     // Wand information
     char firmware_version[32];
@@ -116,6 +117,10 @@ public:
     // Control auto-reconnect behavior
     void setUserDisconnectRequested(bool requested) { userDisconnectRequested = requested; }
     bool isUserDisconnectRequested() const { return userDisconnectRequested; }
+
+    // Track if initialization is needed after web-initiated connection
+    void setNeedsInitialization(bool needs) { needsInitialization = needs; }
+    bool getNeedsInitialization() const { return needsInitialization; }
 
     // IMU streaming control
     bool startIMUStreaming();

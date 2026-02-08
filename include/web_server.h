@@ -72,6 +72,8 @@ private:
     static esp_err_t hotspot_settings_handler(httpd_req_t *req);                    // Save hotspot settings
     static esp_err_t hotspot_get_handler(httpd_req_t *req);                         // Get hotspot settings
     static esp_err_t system_reboot_handler(httpd_req_t *req);                       // Reboot device
+    static esp_err_t system_wifi_mode_handler(httpd_req_t *req);                    // Switch WiFi mode (client/AP)
+    static esp_err_t system_reset_nvs_handler(httpd_req_t *req);                    // Factory reset (clear NVS)
     static esp_err_t gesture_404_handler(httpd_req_t *req, httpd_err_code_t error); // Intercept 404s for gesture images
     static esp_err_t gesture_image_handler(httpd_req_t *req);                       // Serve gesture images from SPIFFS
 
