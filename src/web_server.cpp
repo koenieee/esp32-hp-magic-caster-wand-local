@@ -9,6 +9,8 @@
 #include "esp_spiffs.h"
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
+#include <dirent.h>
 
 // Forward declaration from main.cpp
 #if USE_USB_HID_DEVICE
@@ -367,82 +369,7 @@ static const char index_html[] = R"rawliteral(
                 opacity: 0;
             }
         }
-        /* Spell Learning Overlay */
-        .spell-overlay {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.85);
-            z-index: 9999;
-            justify-content: center;
-            align-items: center;
-            animation: fadeIn 0.3s ease-out;
-        }
-        .spell-overlay.active {
-            display: flex;
-        }
-        .spell-overlay-content {
-            position: relative;
-            max-width: 90%;
-            max-height: 90%;
-            animation: scaleIn 0.4s ease-out;
-        }
-        .spell-overlay img {
-            max-width: 100%;
-            max-height: 90vh;
-            border-radius: 10px;
-            box-shadow: 0 8px 32px rgba(255, 215, 0, 0.4);
-            border: 3px solid #FFD700;
-        }
-        .spell-overlay-title {
-            position: absolute;
-            top: -50px;
-            left: 50%;
-            transform: translateX(-50%);
-            font-size: 2em;
-            color: #FFD700;
-            font-weight: bold;
-            text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.8);
-            white-space: nowrap;
-        }
-        .spell-overlay-close {
-            position: absolute;
-            top: -40px;
-            right: 0;
-            background: #d32f2f;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 1.2em;
-            font-weight: bold;
-            transition: background 0.3s;
-        }
-        .spell-overlay-close:hover {
-            background: #b71c1c;
-        }
-        @keyframes fadeIn {
-            from {
-                opacity: 0;
-            }
-            to {
-                opacity: 1;
-            }
-        }
-        @keyframes scaleIn {
-            from {
-                transform: scale(0.8);
-                opacity: 0;
-            }
-            to {
-                transform: scale(1);
-                opacity: 1;
-            }
-        }
+        /* Spell Learning Controls */
         .spell-learning-controls {
             background: #333;
             padding: 20px;
@@ -686,7 +613,8 @@ static const char index_html[] = R"rawliteral(
                 <select id="spell-selector">
                     <option value="">-- Select a spell to practice --</option>
                 </select>
-                <button class="button" onclick="practiceSpell()">✨ Practice Spell</button>
+                <button class="button" onclick="practiceSpell()">📖 Load Reference</button>
+                <button class="button secondary" onclick="clearReferenceGesture()">🗑️ Clear</button>
             </div>
         </div>
         
@@ -724,15 +652,6 @@ static const char index_html[] = R"rawliteral(
         </div>
     </div>
     
-    <!-- Spell Learning Overlay -->
-    <div id="spell-overlay" class="spell-overlay" onclick="closeSpellOverlay(event)">
-        <div class="spell-overlay-content">
-            <div class="spell-overlay-title" id="spell-overlay-title">Spell Name</div>
-            <button class="spell-overlay-close" onclick="closeSpellOverlay()">✕ Close</button>
-            <img id="spell-overlay-image" src="" alt="Spell Gesture">
-        </div>
-    </div>
-    
     <script>
         const canvas = document.getElementById('imu-canvas');
         const ctx = canvas.getContext('2d');
@@ -750,6 +669,10 @@ static const char index_html[] = R"rawliteral(
         let gesturePoints = [];
         let rawGesturePoints = [];  // Store raw coordinates from ESP32
         let isTracking = false;
+        
+        // Gesture reference image for spell practice
+        let referenceGestureImage = null;
+        let referenceGestureLoaded = false;
         
         // WebSocket connection
         let ws = null;
@@ -948,7 +871,30 @@ static const char index_html[] = R"rawliteral(
             gestureCtx.fillStyle = '#000';
             gestureCtx.fillRect(0, 0, gestureCanvas.width, gestureCanvas.height);
             
-            // Draw center crosshair
+            // Draw reference gesture image if loaded (semi-transparent)
+            if (referenceGestureLoaded && referenceGestureImage) {
+                const centerX = gestureCanvas.width / 2;
+                const centerY = gestureCanvas.height / 2;
+                
+                // Scale image to fit canvas while maintaining aspect ratio
+                const maxSize = Math.min(gestureCanvas.width, gestureCanvas.height) * 0.9;
+                const scale = Math.min(maxSize / referenceGestureImage.width, maxSize / referenceGestureImage.height);
+                const scaledWidth = referenceGestureImage.width * scale;
+                const scaledHeight = referenceGestureImage.height * scale;
+                
+                // Draw with 40% opacity as reference
+                gestureCtx.globalAlpha = 0.4;
+                gestureCtx.drawImage(
+                    referenceGestureImage,
+                    centerX - scaledWidth / 2,
+                    centerY - scaledHeight / 2,
+                    scaledWidth,
+                    scaledHeight
+                );
+                gestureCtx.globalAlpha = 1.0;
+            }
+            
+            // Draw center crosshair on top
             gestureCtx.strokeStyle = '#444';
             gestureCtx.lineWidth = 1;
             gestureCtx.beginPath();
@@ -1057,10 +1003,14 @@ static const char index_html[] = R"rawliteral(
         function spellNameToFilename(spellName) {
             // Check if there's a custom mapping
             if (SPELL_FILENAME_MAP[spellName]) {
-                return SPELL_FILENAME_MAP[spellName];
+                const mappedFilename = SPELL_FILENAME_MAP[spellName];
+                console.log('[Filename Map] Custom mapping:', spellName, '->', mappedFilename);
+                return mappedFilename;
             }
             // Default: convert to lowercase
-            return spellName.toLowerCase() + '.png';
+            const filename = spellName.toLowerCase() + '.png';
+            console.log('[Filename Map] Default mapping:', spellName, '->', filename);
+            return filename;
         }
         
         function populateSpellSelector() {
@@ -1077,6 +1027,8 @@ static const char index_html[] = R"rawliteral(
             const selector = document.getElementById('spell-selector');
             const selectedSpell = selector.value;
             
+            console.log('[Spell Practice] Selected spell:', selectedSpell);
+            
             if (!selectedSpell) {
                 showToast('Please select a spell to practice', 'error');
                 return;
@@ -1085,19 +1037,38 @@ static const char index_html[] = R"rawliteral(
             const filename = spellNameToFilename(selectedSpell);
             const imageUrl = `/gesture/${filename}`;
             
-            // Update overlay
-            document.getElementById('spell-overlay-title').textContent = selectedSpell.replace(/_/g, ' ');
-            document.getElementById('spell-overlay-image').src = imageUrl;
+            console.log('[Spell Practice] Loading reference:', filename);
             
-            // Show overlay
-            document.getElementById('spell-overlay').classList.add('active');
+            // Create image object
+            const img = new Image();
+            
+            img.onload = function() {
+                console.log('[Spell Practice] Reference image loaded:', imageUrl);
+                referenceGestureImage = img;
+                referenceGestureLoaded = true;
+                
+                // Redraw canvas with reference image
+                clearGestureCanvas();
+                drawGesture();
+                
+                showToast(`Reference loaded: ${selectedSpell.replace(/_/g, ' ')}`, 'success');
+            };
+            
+            img.onerror = function() {
+                console.error('[Spell Practice] Failed to load image:', imageUrl);
+                showToast('Failed to load gesture image: ' + filename, 'error');
+            };
+            
+            img.src = imageUrl;
         }
         
-        function closeSpellOverlay(event) {
-            // Close if clicking on overlay background or close button
-            if (!event || event.target.id === 'spell-overlay' || event.target.className.includes('spell-overlay-close')) {
-                document.getElementById('spell-overlay').classList.remove('active');
-            }
+        function clearReferenceGesture() {
+            referenceGestureImage = null;
+            referenceGestureLoaded = false;
+            clearGestureCanvas();
+            drawGesture();
+            console.log('[Spell Practice] Reference cleared');
+            showToast('Reference cleared', 'success');
         }
         
         // Initialize spell selector on page load
@@ -1323,20 +1294,7 @@ static const char index_html[] = R"rawliteral(
             document.getElementById('btn4').style.color = b4 ? '#4CAF50' : '#666';
         }
         
-        // Spell names list (73 spells - must match server-side SPELL_NAMES array)
-        const SPELL_NAMES = [
-            "The_Force_Spell", "Colloportus", "Colloshoo", "The_Hour_Reversal_Reversal_Charm", "Evanesco", 
-            "Herbivicus", "Orchideous", "Brachiabindo", "Meteolojinx", "Riddikulus", "Silencio", "Immobulus", 
-            "Confringo", "Petrificus_Totalus", "Flipendo", "The_Cheering_Charm", "Salvio_Hexia", "Pestis_Incendium", 
-            "Alohomora", "Protego", "Langlock", "Mucus_Ad_Nauseum", "Flagrate", "Glacius", "Finite", "Anteoculatia", 
-            "Expelliarmus", "Expecto_Patronum", "Descendo", "Depulso", "Reducto", "Colovaria", "Aberto", "Confundo", 
-            "Densaugeo", "The_Stretching_Jinx", "Entomorphis", "The_Hair_Thickening_Growing_Charm", "Bombarda", 
-            "Finestra", "The_Sleeping_Charm", "Rictusempra", "Piertotum_Locomotor", "Expulso", "Impedimenta", 
-            "Ascendio", "Incarcerous", "Ventus", "Revelio", "Accio", "Melefors", "Scourgify", "Wingardium_Leviosa", 
-            "Nox", "Stupefy", "Spongify", "Lumos", "Appare_Vestigium", "Verdimillious", "Fulgari", "Reparo", 
-            "Locomotor", "Quietus", "Everte_Statum", "Incendio", "Aguamenti", "Sonorus", "Cantis", "Arania_Exumai", 
-            "Calvorio", "The_Hour_Reversal_Charm", "Vermillious", "The_Pepper-Breath_Hex"
-        ];
+        // SPELL_NAMES already declared above in Spell Learning section (line ~1033)
 
         const KEY_OPTIONS = [
             { group: 'Common', label: 'None', value: 0 },
@@ -1959,6 +1917,31 @@ bool WebServer::begin(uint16_t port)
             {
                 ESP_LOGI(TAG, "SPIFFS is empty - run './upload_gestures.sh' to upload gesture images");
             }
+            else
+            {
+                // List SPIFFS contents for debugging
+                ESP_LOGI(TAG, "Listing SPIFFS contents:");
+                DIR *dir = opendir("/spiffs");
+                if (dir)
+                {
+                    struct dirent *entry;
+                    int file_count = 0;
+                    while ((entry = readdir(dir)) != NULL && file_count < 10)
+                    {
+                        ESP_LOGI(TAG, "  - %s", entry->d_name);
+                        file_count++;
+                    }
+                    if (file_count == 10)
+                    {
+                        ESP_LOGI(TAG, "  ... (showing first 10 files)");
+                    }
+                    closedir(dir);
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "Failed to open SPIFFS directory for listing");
+                }
+            }
         }
     }
 
@@ -2199,23 +2182,14 @@ bool WebServer::begin(uint16_t port)
         ESP_LOGW(TAG, "System reboot handler registration FAILED");
     }
 
-    // Gesture image handler (wildcard for /gesture/*.png)
-    httpd_uri_t gesture_image = {
-        .uri = "/gesture/*",
-        .method = HTTP_GET,
-        .handler = gesture_image_handler,
-        .user_ctx = nullptr,
-        .is_websocket = false,
-        .handle_ws_control_frames = false,
-        .supported_subprotocol = nullptr};
-    if (httpd_register_uri_handler(server, &gesture_image) != ESP_OK)
-    {
-        ESP_LOGW(TAG, "Gesture image handler registration FAILED");
-    }
+    // Register 404 error handler to intercept gesture image requests
+    // ESP-IDF httpd wildcards don't work well, so use error handler approach
+    ESP_LOGI(TAG, "Registering 404 handler for gesture images");
+    httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, gesture_404_handler);
 
     running = true;
     ESP_LOGI(TAG, "Web server started on port %d", port);
-    ESP_LOGI(TAG, "Registered endpoints: /, /ws, /generate_204, /hotspot-detect.html, /scan, /set_mac, /get_stored_mac, /connect, /disconnect, /settings/get, /settings/save, /settings/reset, /wifi/scan, /wifi/connect, /hotspot/settings, /hotspot/get, /system/reboot, /gesture/*");
+    ESP_LOGI(TAG, "Registered endpoints: /, /ws, /generate_204, /hotspot-detect.html, /scan, /set_mac, /get_stored_mac, /connect, /disconnect, /settings/get, /settings/save, /settings/reset, /wifi/scan, /wifi/connect, /hotspot/settings, /hotspot/get, /system/reboot, [404:gesture/*]");
     return true;
 }
 
@@ -3674,6 +3648,24 @@ esp_err_t WebServer::system_reboot_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// Custom 404 handler that intercepts gesture image requests
+esp_err_t WebServer::gesture_404_handler(httpd_req_t *req, httpd_err_code_t error)
+{
+    // Check if this is a gesture image request
+    const char *uri = req->uri;
+    if (strncmp(uri, "/gesture/", 9) == 0)
+    {
+        ESP_LOGI(TAG, "404 handler intercepted gesture request: %s", uri);
+        // This is a gesture request - serve the image
+        return gesture_image_handler(req);
+    }
+
+    // Not a gesture request - send normal 404
+    ESP_LOGW(TAG, "404 Not Found: %s", uri);
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "URI not found");
+    return ESP_FAIL;
+}
+
 esp_err_t WebServer::gesture_image_handler(httpd_req_t *req)
 {
     // Extract spell name from URI: /gesture/<spell_name>.png
@@ -3681,8 +3673,11 @@ esp_err_t WebServer::gesture_image_handler(httpd_req_t *req)
     const char *prefix = "/gesture/";
     size_t prefix_len = strlen(prefix);
 
+    ESP_LOGI(TAG, "Gesture request received: %s", uri);
+
     if (strncmp(uri, prefix, prefix_len) != 0)
     {
+        ESP_LOGW(TAG, "Invalid gesture URI (missing prefix): %s", uri);
         httpd_resp_send_404(req);
         return ESP_FAIL;
     }
@@ -3692,13 +3687,14 @@ esp_err_t WebServer::gesture_image_handler(httpd_req_t *req)
     char filepath[128];
     snprintf(filepath, sizeof(filepath), "/spiffs/%s", filename_start);
 
-    ESP_LOGI(TAG, "Serving gesture image: %s", filepath);
+    ESP_LOGI(TAG, "Looking for gesture image: %s", filepath);
 
     // Open file from SPIFFS
     FILE *file = fopen(filepath, "r");
     if (!file)
     {
-        ESP_LOGW(TAG, "Gesture image not found: %s", filepath);
+        ESP_LOGE(TAG, "Gesture image not found: %s (errno: %d - %s)",
+                 filepath, errno, strerror(errno));
         httpd_resp_send_404(req);
         return ESP_FAIL;
     }
@@ -3707,6 +3703,8 @@ esp_err_t WebServer::gesture_image_handler(httpd_req_t *req)
     fseek(file, 0, SEEK_END);
     size_t file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
+
+    ESP_LOGI(TAG, "Serving gesture image: %s (size: %zu bytes)", filepath, file_size);
 
     // Set content type and headers
     httpd_resp_set_type(req, "image/png");
