@@ -1098,6 +1098,7 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
 
                 if (webServer)
                 {
+#if GESTURE_RATE_LIMIT_ENABLE
                     // Rate limit: Only broadcast every 4th position (~60 Hz instead of 234 Hz)
                     // This provides smooth visualization while preventing WebSocket overflow
                     static int broadcast_counter = 0;
@@ -1109,6 +1110,11 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                         webServer->broadcastGesturePoint(pos.x, pos.y);
                         broadcast_counter = 0;
                     }
+#else
+                    // Broadcast all gesture points at full IMU rate (~234 Hz)
+                    const Position2D &pos = positions[new_count - 1];
+                    webServer->broadcastGesturePoint(pos.x, pos.y);
+#endif
                 }
             }
         }

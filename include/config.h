@@ -4,6 +4,11 @@
 // USB HID Support - disabled to reduce interference with BLE/WiFi
 #define USE_USB_HID_DEVICE 0
 
+// Gesture visualization rate limiting
+// Set to 1 to rate limit gesture broadcasts to ~60Hz (reduces WebSocket traffic)
+// Set to 0 to broadcast all gesture points at full IMU rate (~234Hz)
+#define GESTURE_RATE_LIMIT_ENABLE 1
+
 // Wand BLE UUIDs
 #define WAND_SERVICE_UUID "57420001-587e-48a0-974c-544d6163c577"
 #define WAND_COMMAND_UUID "57420002-587e-48a0-974c-544d6163c577"

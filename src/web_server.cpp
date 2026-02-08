@@ -390,6 +390,12 @@ static const char index_html[] = R"rawliteral(
             border-radius: 5px;
             font-size: 1em;
         }
+        /* Desktop scaling - reduce everything by 30% for better overview */
+        @media (min-width: 901px) {
+            body {
+                zoom: 0.7;
+            }
+        }
     </style>
 </head>
 <body>

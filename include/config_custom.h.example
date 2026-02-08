@@ -33,4 +33,8 @@
 // #undef USE_USB_HID_DEVICE
 // #define USE_USB_HID_DEVICE 1
 
+// Example: Disable gesture rate limiting for full detail (234Hz)
+// #undef GESTURE_RATE_LIMIT_ENABLE
+// #define GESTURE_RATE_LIMIT_ENABLE 0
+
 #endif // CONFIG_CUSTOM_H
