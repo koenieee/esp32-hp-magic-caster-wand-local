@@ -1866,6 +1866,27 @@ static const char index_html[] = R"rawliteral(
                     }, 5000);
                 });
         }
+        
+        // Load current WiFi mode and set dropdown
+        function loadWifiMode() {
+            fetch('/system/get_wifi_mode')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.mode) {
+                        const dropdown = document.getElementById('wifi-mode');
+                        if (dropdown) {
+                            dropdown.value = data.mode;
+                            console.log('Current WiFi mode:', data.mode, 'Force AP:', data.force_ap);
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.error('Failed to load WiFi mode:', error);
+                });
+        }
+        
+        // Load WiFi mode when page loads
+        loadWifiMode();
     </script>
 </body>
 </html>
@@ -3892,6 +3913,42 @@ esp_err_t WebServer::system_reset_nvs_handler(httpd_req_t *req)
     // Reboot after delay
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
+
+    return ESP_OK;
+}
+
+esp_err_t WebServer::system_get_wifi_mode_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "system_get_wifi_mode_handler called");
+
+    // Check force_ap_mode flag from NVS
+    bool force_ap = false;
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err == ESP_OK)
+    {
+        uint8_t ap_mode = 0;
+        err = nvs_get_u8(nvs_handle, "force_ap_mode", &ap_mode);
+        if (err == ESP_OK && ap_mode == 1)
+        {
+            force_ap = true;
+        }
+        nvs_close(nvs_handle);
+    }
+
+    // Also check current WiFi mode
+    wifi_mode_t current_mode;
+    esp_wifi_get_mode(&current_mode);
+
+    char response[200];
+    snprintf(response, sizeof(response),
+             "{\"success\":true,\"mode\":\"%s\",\"current_wifi_mode\":\"%s\",\"force_ap\":%s}",
+             force_ap ? "ap" : "client",
+             current_mode == WIFI_MODE_AP ? "AP" : (current_mode == WIFI_MODE_STA ? "STA" : "APSTA"),
+             force_ap ? "true" : "false");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, response);
 
     return ESP_OK;
 }
