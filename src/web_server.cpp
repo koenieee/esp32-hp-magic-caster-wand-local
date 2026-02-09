@@ -147,6 +147,22 @@ static const char index_html[] = R"rawliteral(
         .battery-low {
             color: #ff4444;
         }
+        .battery-warning {
+            display: none;
+            background: rgba(255, 152, 0, 0.15);
+            border-left: 4px solid #ff9800;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-size: 0.9em;
+            line-height: 1.5;
+        }
+        .battery-warning.show {
+            display: block;
+        }
+        .battery-warning strong {
+            color: #ff9800;
+        }
         .spell-box { 
             font-size: 2em; 
             text-align: center; 
@@ -421,6 +437,17 @@ static const char index_html[] = R"rawliteral(
             </div>
             <div id="scanStatus" style="margin-top: 10px; color: #888;"></div>
             <div id="scanResults" class="scan-results"></div>
+            
+            <div id="battery-warning" class="battery-warning">
+                <strong>⚠️ Low Battery Warning</strong><br>
+                Wand battery is critically low (&lt;40%). The wand is in power-saving mode with limited functionality:
+                <ul style="margin: 8px 0 0 20px; padding: 0;">
+                    <li>Battery monitoring: ✓ Active</li>
+                    <li>Wand control &amp; spells: ✗ Disabled</li>
+                    <li>IMU &amp; gesture tracking: ✗ Disabled</li>
+                </ul>
+                <strong>Please charge the wand to restore full functionality.</strong>
+            </div>
         </div>
         
         <div class="ble-controls">
@@ -859,6 +886,7 @@ static const char index_html[] = R"rawliteral(
         
         function updateBattery(level) {
             const batteryElem = document.getElementById('battery');
+            const warningElem = document.getElementById('battery-warning');
             batteryElem.textContent = level;
             
             // Change color based on battery level
@@ -866,6 +894,13 @@ static const char index_html[] = R"rawliteral(
                 batteryElem.className = 'battery-level battery-low';
             } else {
                 batteryElem.className = 'battery-level';
+            }
+            
+            // Show warning if battery is critically low (<40%)
+            if (level < 40) {
+                warningElem.classList.add('show');
+            } else {
+                warningElem.classList.remove('show');
             }
         }
         
@@ -1320,6 +1355,7 @@ static const char index_html[] = R"rawliteral(
             document.getElementById('wand-device-id').textContent = '-';
             document.getElementById('battery').textContent = '--';
             document.getElementById('battery').className = 'battery-level';
+            document.getElementById('battery-warning').classList.remove('show');
             // Clear button states
             updateButtons(false, false, false, false);
         }

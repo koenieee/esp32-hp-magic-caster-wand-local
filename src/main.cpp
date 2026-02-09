@@ -1119,7 +1119,16 @@ extern "C" void app_main()
             // Wait before starting IMU streaming
             vTaskDelay(500 / portTICK_PERIOD_MS);
 
-            if (!wandClient.startIMUStreaming())
+            // Check if wand is in battery-only mode (power-saving at low battery)
+            if (wandClient.isBatteryOnlyMode())
+            {
+                ESP_LOGI(TAG, "⚠️  Wand is in BATTERY-ONLY power-saving mode");
+                ESP_LOGI(TAG, "    Battery monitor active, but wand control disabled");
+                ESP_LOGI(TAG, "    Charge wand to >40%% to restore full functionality");
+
+                // Skip IMU streaming and initialization since wand control service isn't available
+            }
+            else if (!wandClient.startIMUStreaming())
             {
                 ESP_LOGW(TAG, "WARNING: Failed to start IMU streaming");
             }
@@ -1291,28 +1300,38 @@ extern "C" void app_main()
                 ESP_LOGI(TAG, "Wand connected via web interface - running initialization...");
                 vTaskDelay(3000 / portTICK_PERIOD_MS); // Wait for service discovery
 
-                // Initialize button thresholds
-                if (!wandClient.initButtonThresholds())
+                // Check if wand is in battery-only mode first to skip unnecessary commands
+                if (wandClient.isBatteryOnlyMode())
                 {
-                    ESP_LOGW(TAG, "WARNING: Failed to initialize button thresholds");
-                }
-
-                // Request wand information
-                if (!wandClient.requestWandInfo())
-                {
-                    ESP_LOGW(TAG, "WARNING: Failed to request wand information");
-                }
-
-                // Wait before starting IMU streaming
-                vTaskDelay(500 / portTICK_PERIOD_MS);
-
-                if (!wandClient.startIMUStreaming())
-                {
-                    ESP_LOGW(TAG, "WARNING: Failed to start IMU streaming");
+                    ESP_LOGI(TAG, "⚠️  Wand in BATTERY-ONLY mode - initialization skipped");
+                    ESP_LOGI(TAG, "    Only battery monitoring available");
+                    ESP_LOGI(TAG, "    Charge wand to >40%% to enable wand control");
                 }
                 else
                 {
-                    ESP_LOGI(TAG, "\u2713 Wand initialized successfully");
+                    // Initialize button thresholds
+                    if (!wandClient.initButtonThresholds())
+                    {
+                        ESP_LOGW(TAG, "WARNING: Failed to initialize button thresholds");
+                    }
+
+                    // Request wand information
+                    if (!wandClient.requestWandInfo())
+                    {
+                        ESP_LOGW(TAG, "WARNING: Failed to request wand information");
+                    }
+
+                    // Wait before starting IMU streaming
+                    vTaskDelay(500 / portTICK_PERIOD_MS);
+
+                    if (!wandClient.startIMUStreaming())
+                    {
+                        ESP_LOGW(TAG, "WARNING: Failed to start IMU streaming");
+                    }
+                    else
+                    {
+                        ESP_LOGI(TAG, "\u2713 Wand initialized successfully");
+                    }
                 }
 
                 // Clear the flag
