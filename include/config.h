@@ -4,6 +4,11 @@
 // USB HID Support - disabled to reduce interference with BLE/WiFi
 #define USE_USB_HID_DEVICE 0
 
+// Gesture visualization rate limiting
+// Set to 1 to rate limit gesture broadcasts to ~60Hz (reduces WebSocket traffic)
+// Set to 0 to broadcast all gesture points at full IMU rate (~234Hz)
+#define GESTURE_RATE_LIMIT_ENABLE 0
+
 // Wand BLE UUIDs
 #define WAND_SERVICE_UUID "57420001-587e-48a0-974c-544d6163c577"
 #define WAND_COMMAND_UUID "57420002-587e-48a0-974c-544d6163c577"
@@ -13,14 +18,14 @@
 // Wand MAC address (set your wand's MAC here)
 #define WAND_MAC_ADDRESS "C2:BD:5D:3C:67:4E"
 
-// Home Assistant Integration (set to 0 to disable WiFi/MQTT)
-#define ENABLE_HOME_ASSISTANT 1 // Re-enabled - model is memory-mapped, plenty of RAM available
+// Home Assistant Integration (set to 1 to enable WiFi/MQTT)
+#define ENABLE_HOME_ASSISTANT 0 // Disabled by default - enable in config_custom.h
 
-// WiFi Mode: 0 = Access Point (default), 1 = Station (connect to existing WiFi)
-#define USE_WIFI_AP_MODE 0 // Set to 1 for station mode (connect to existing WiFi)
+// WiFi Mode: 0 = Access Point (default), 1 = Station (connect to existing WiFi for HA)
+#define USE_WIFI_AP_MODE 0 // 0 = standalone AP mode, 1 = connect to existing WiFi
 
 // WiFi Access Point Configuration (when USE_WIFI_AP_MODE = 0)
-#define AP_SSID "MagicWand-ESP32"
+#define AP_SSID "HP-esp32-wand-gateway"
 #define AP_PASSWORD "" // Empty = open network (no password required)
 #define AP_CHANNEL 1
 #define AP_MAX_CONNECTIONS 4
@@ -53,5 +58,11 @@
 #define DEBUG_SERIAL true
 #define DEBUG_IMU_DATA false
 #define DEBUG_SPELL_TRACKING true
+
+// Include custom configuration if it exists (not version controlled)
+// Copy config_custom.h.example to config_custom.h and customize as needed
+#if __has_include("config_custom.h")
+#include "config_custom.h"
+#endif
 
 #endif // CONFIG_H

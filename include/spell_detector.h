@@ -81,6 +81,12 @@ private:
     Quaternion start_quat;
     Quaternion inv_quat; // Inverse quaternion for Python-style projection
 
+    Quaternion mouse_start_quat;
+    Quaternion mouse_inv_quat;
+    float mouse_ref_vec_x, mouse_ref_vec_y, mouse_ref_vec_z;
+    float mouse_initial_yaw;
+    bool mouse_ref_ready;
+
     Position2D *positions;
     size_t position_count;
     bool tracking;
@@ -107,6 +113,16 @@ private:
     // Quaternion multiplication
     Quaternion multiply(const Quaternion &a, const Quaternion &b);
 
+    // Initialize reference from current quaternion
+    void initReferenceFromCurrentQuat(Quaternion &start_q, Quaternion &inv_q,
+                                      float &ref_x, float &ref_y, float &ref_z,
+                                      float &initial_yaw_out);
+
+    // Compute position from current quaternion and reference
+    bool computePositionFromReference(const Quaternion &start_q, const Quaternion &inv_q,
+                                      float ref_x, float ref_y, float ref_z,
+                                      float initial_yaw_in, Position2D &out_pos);
+
 public:
     AHRSTracker();
     ~AHRSTracker();
@@ -128,6 +144,12 @@ public:
 
     // Get positions array (for web visualization) - read-only access
     const Position2D *getPositions() const { return positions; }
+
+    // Get current mouse position (AHRS fused path)
+    bool getMousePosition(Position2D &out_pos);
+
+    // Reset mouse reference (recenters on next update)
+    void resetMouseReference();
 
     // Reset AHRS state
     void reset();

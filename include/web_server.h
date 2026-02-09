@@ -59,14 +59,25 @@ private:
     static esp_err_t ws_handler(httpd_req_t *req);   // WebSocket handler
     static esp_err_t data_handler(httpd_req_t *req); // Polling endpoint
     static esp_err_t captive_portal_handler(httpd_req_t *req);
-    static esp_err_t scan_handler(httpd_req_t *req);           // Start BLE scan
-    static esp_err_t set_mac_handler(httpd_req_t *req);        // Set wand MAC address
-    static esp_err_t get_stored_mac_handler(httpd_req_t *req); // Get stored MAC address
-    static esp_err_t connect_handler(httpd_req_t *req);        // Connect to stored wand
-    static esp_err_t disconnect_handler(httpd_req_t *req);     // Disconnect from wand
-    static esp_err_t settings_get_handler(httpd_req_t *req);   // Get USB HID settings
-    static esp_err_t settings_save_handler(httpd_req_t *req);  // Save USB HID settings
-    static esp_err_t settings_reset_handler(httpd_req_t *req); // Reset USB HID settings
+    static esp_err_t scan_handler(httpd_req_t *req);                                // Start BLE scan
+    static esp_err_t set_mac_handler(httpd_req_t *req);                             // Set wand MAC address
+    static esp_err_t get_stored_mac_handler(httpd_req_t *req);                      // Get stored MAC address
+    static esp_err_t connect_handler(httpd_req_t *req);                             // Connect to stored wand
+    static esp_err_t disconnect_handler(httpd_req_t *req);                          // Disconnect from wand
+    static esp_err_t settings_get_handler(httpd_req_t *req);                        // Get USB HID settings
+    static esp_err_t settings_save_handler(httpd_req_t *req);                       // Save USB HID settings
+    static esp_err_t settings_reset_handler(httpd_req_t *req);                      // Reset USB HID settings
+    static esp_err_t wifi_scan_handler(httpd_req_t *req);                           // Scan WiFi networks
+    static esp_err_t wifi_connect_handler(httpd_req_t *req);                        // Connect to WiFi
+    static esp_err_t hotspot_settings_handler(httpd_req_t *req);                    // Save hotspot settings
+    static esp_err_t hotspot_get_handler(httpd_req_t *req);                         // Get hotspot settings
+    static esp_err_t system_reboot_handler(httpd_req_t *req);                       // Reboot device
+    static esp_err_t system_wifi_mode_handler(httpd_req_t *req);                    // Switch WiFi mode (client/AP)
+    static esp_err_t system_reset_nvs_handler(httpd_req_t *req);                    // Factory reset (clear NVS)
+    static esp_err_t system_get_wifi_mode_handler(httpd_req_t *req);                // Get current WiFi mode
+    static esp_err_t debug_nvs_handler(httpd_req_t *req);                           // Debug: Show NVS contents
+    static esp_err_t gesture_404_handler(httpd_req_t *req, httpd_err_code_t error); // Intercept 404s for gesture images
+    static esp_err_t gesture_image_handler(httpd_req_t *req);                       // Serve gesture images from SPIFFS
 
     void addWebSocketClient(int fd);
     void removeWebSocketClient(int fd);

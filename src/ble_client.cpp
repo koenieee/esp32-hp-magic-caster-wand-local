@@ -137,6 +137,8 @@ WandBLEClient::WandBLEClient()
       lastButtonState(0),
       last_battery_level(0),
       userDisconnectRequested(false),
+      needsInitialization(false),
+      batteryOnlyMode(false),
       writeIndex(0),
       readIndex(0),
       processingTask(nullptr),
@@ -245,10 +247,14 @@ static int chr_discovered(uint16_t conn_handle,
     if ((chr == NULL && error->status == 0) || error->status == BLE_HS_EDONE)
     {
         ESP_LOGI(TAG, "Characteristic discovery complete (status=%d)", error->status);
+        ESP_LOGI(TAG, "  Found characteristics: notify=%d, command=%d, battery=%d",
+                 notify_char_val_handle, command_char_val_handle, battery_char_val_handle);
 
         // Set up handles and subscribe if we have the required characteristics
         if (notify_char_val_handle && command_char_val_handle)
         {
+            client->setBatteryOnlyMode(false); // Full service access available
+
             ESP_LOGI(TAG, "Setting up wand communication...");
             ESP_LOGI(TAG, "  Notify handle: %d (CCCD: %d)", notify_char_val_handle, notify_char_val_handle + 1);
             ESP_LOGI(TAG, "  Command handle: %d", command_char_val_handle);
@@ -289,7 +295,37 @@ static int chr_discovered(uint16_t conn_handle,
         }
         else
         {
-            ESP_LOGW(TAG, "Not all required characteristics found!");
+            // Check if we found ONLY battery service (common low-battery power-saving mode)
+            if (battery_char_val_handle && !notify_char_val_handle && !command_char_val_handle)
+            {
+                client->setBatteryOnlyMode(true);
+
+                ESP_LOGW(TAG, "🔋 Wand is in BATTERY-ONLY mode (power-saving)");
+                ESP_LOGW(TAG, "   ┌─────────────────────────────────────────────────┐");
+                ESP_LOGW(TAG, "   │ The wand only exposed the Battery Service.     │");
+                ESP_LOGW(TAG, "   │ This means battery is critically low (<%d%%)    │", 40);
+                ESP_LOGW(TAG, "   │ • Wand Control Service is disabled to save power│");
+                ESP_LOGW(TAG, "   │ • Commands and IMU streaming are unavailable   │");
+                ESP_LOGW(TAG, "   │ • CHARGE THE WAND to restore full functionality│");
+                ESP_LOGW(TAG, "   └─────────────────────────────────────────────────┘");
+
+                // Read battery to confirm low level
+                // Still fire callback so UI knows we're "connected" but limited
+                client->triggerConnectionCallback(true);
+            }
+            else
+            {
+                // Different failure - might be interference, timeout, or wand issue
+                client->setBatteryOnlyMode(false);
+
+                ESP_LOGW(TAG, "⚠️ Not all required wand characteristics found!");
+                ESP_LOGW(TAG, "   Found: notify=%d, command=%d, battery=%d",
+                         notify_char_val_handle, command_char_val_handle, battery_char_val_handle);
+                ESP_LOGW(TAG, "   Possible causes:");
+                ESP_LOGW(TAG, "   1. BLE interference - retry connection");
+                ESP_LOGW(TAG, "   2. Wand is in deep sleep - press button to wake");
+                ESP_LOGW(TAG, "   3. Wand firmware issue - power cycle the wand");
+            }
         }
     }
 
@@ -302,9 +338,21 @@ static int svc_discovered(uint16_t conn_handle,
 {
     if (error->status == 0 && service)
     {
-        ESP_LOGI(TAG, "Service discovered");
+        // Log which service was found
+        char uuid_str[BLE_UUID_STR_LEN];
+        ble_uuid_to_str(&service->uuid.u, uuid_str);
+        ESP_LOGI(TAG, "Service discovered: UUID=%s, handles %d-%d", uuid_str, service->start_handle, service->end_handle);
+
         ble_gattc_disc_all_chrs(conn_handle, service->start_handle,
                                 service->end_handle, chr_discovered, arg);
+    }
+    else if (error->status == BLE_HS_EDONE)
+    {
+        ESP_LOGI(TAG, "Service discovery complete (no more services found)");
+    }
+    else if (error->status != 0)
+    {
+        ESP_LOGE(TAG, "Service discovery error: status=%d", error->status);
     }
     return 0;
 }
@@ -403,12 +451,14 @@ int WandBLEClient::gap_event_handler(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "Connected to wand!");
             client->conn_handle = event->connect.conn_handle;
             client->connected = true;
-            client->userDisconnectRequested = false; // Clear flag on successful connection
 
-            if (client->connectionCallback)
+            // Clear flags on successful connection (unless this was a web-initiated connection)
+            if (!client->needsInitialization)
             {
-                client->connectionCallback(true);
+                client->userDisconnectRequested = false;
             }
+
+            client->triggerConnectionCallback(true);
 
             gpio_set_level(LED_GPIO, 1);
 
@@ -435,6 +485,13 @@ int WandBLEClient::gap_event_handler(struct ble_gap_event *event, void *arg)
 
             // Discover services
             ESP_LOGI(TAG, "Discovering services...");
+
+            // Reset all characteristic handles before starting discovery
+            notify_char_val_handle = 0;
+            command_char_val_handle = 0;
+            battery_char_val_handle = 0;
+            client->setBatteryOnlyMode(false);
+
             ble_gattc_disc_svc_by_uuid(event->connect.conn_handle,
                                        &wand_service_uuid.u, svc_discovered, client);
             // Also discover battery service
@@ -487,10 +544,7 @@ int WandBLEClient::gap_event_handler(struct ble_gap_event *event, void *arg)
         client->imuStreaming = false;
         client->connection_start_time_us = 0;
 
-        if (client->connectionCallback)
-        {
-            client->connectionCallback(false);
-        }
+        client->triggerConnectionCallback(false);
 
         gpio_set_level(LED_GPIO, 0);
 
@@ -837,6 +891,13 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
     bool enoughButtonsPressed = (buttonsPressed >= BUTTON_MIN_FOR_TRACKING);
     bool wasEnoughPressed = (__builtin_popcount(lastButtonState & 0x0F) >= BUTTON_MIN_FOR_TRACKING);
 
+#if USE_USB_HID_DEVICE
+    if (usbHID.getHidMode() != HID_MODE_GAMEPAD)
+    {
+        usbHID.setGamepadButtons(buttonState & 0x0F);
+    }
+#endif
+
     if (buttonState != lastButtonState)
     {
         bool b1 = buttonState & 0x01, b2 = buttonState & 0x02,
@@ -900,6 +961,7 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
                         // Send mapped keyboard key for detected spell
 #if USE_USB_HID_DEVICE
                         usbHID.sendSpellKeyboardForSpell(spell_name);
+                        usbHID.sendSpellGamepadForSpell(spell_name);
 #endif
                     }
                     else if (!spell_name)
@@ -958,16 +1020,81 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
     // Python also updates AHRS continuously, not just during tracking
     size_t old_count = ahrsTracker.getPositionCount();
 
-    static bool has_last_pos = false;
-    static Position2D last_pos = {0.0f, 0.0f};
+    static bool was_tracking = false;
+    static bool has_last_mouse_pos = false;
+    static Position2D last_mouse_pos = {0.0f, 0.0f};
     static float accum_dx = 0.0f;
     static float accum_dy = 0.0f;
     static int mouse_counter = 0;
 
     ahrsTracker.update(sample);
 
+    bool is_tracking = ahrsTracker.isTracking();
+
+    if (is_tracking != was_tracking)
+    {
+        has_last_mouse_pos = false;
+        accum_dx = 0.0f;
+        accum_dy = 0.0f;
+        mouse_counter = 0;
+        was_tracking = is_tracking;
+    }
+
+    if (!is_tracking)
+    {
+        Position2D pos;
+        if (ahrsTracker.getMousePosition(pos))
+        {
+            if (!has_last_mouse_pos)
+            {
+                last_mouse_pos = pos;
+                has_last_mouse_pos = true;
+            }
+            else
+            {
+                float dx = pos.x - last_mouse_pos.x;
+                float dy = pos.y - last_mouse_pos.y;
+#if USE_USB_HID_DEVICE
+                HIDMode current_mode = usbHID.getHidMode();
+                if (current_mode == HID_MODE_MOUSE)
+                {
+                    dy = usbHID.getInvertMouseY() ? -dy : dy;
+                }
+                else if (current_mode == HID_MODE_GAMEPAD)
+                {
+                    dy = usbHID.getGamepadInvertY() ? -dy : dy;
+                }
+#else
+                dy = -dy;     // Default: inverted
+#endif
+                accum_dx += dx;
+                accum_dy += dy;
+                last_mouse_pos = pos;
+
+                // Rate limit mouse updates to ~60 Hz (every 4th sample)
+                if (++mouse_counter >= 4)
+                {
+#if USE_USB_HID_DEVICE
+                    HIDMode hid_mode = usbHID.getHidMode();
+                    if (hid_mode == HID_MODE_GAMEPAD)
+                    {
+                        usbHID.updateGamepadFromGesture(accum_dx, accum_dy);
+                    }
+                    else if (hid_mode == HID_MODE_MOUSE)
+                    {
+                        usbHID.updateMouseFromGesture(accum_dx, accum_dy);
+                    }
+#endif
+                    accum_dx = 0.0f;
+                    accum_dy = 0.0f;
+                    mouse_counter = 0;
+                }
+            }
+        }
+    }
+
     // Only broadcast gesture points if tracking is active
-    if (ahrsTracker.isTracking())
+    if (is_tracking)
     {
         size_t new_count = ahrsTracker.getPositionCount();
 
@@ -977,24 +1104,45 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
             if (positions && new_count > 0)
             {
                 const Position2D &pos = positions[new_count - 1];
-                if (!has_last_pos)
+                if (!has_last_mouse_pos)
                 {
-                    last_pos = pos;
-                    has_last_pos = true;
+                    last_mouse_pos = pos;
+                    has_last_mouse_pos = true;
                 }
                 else
                 {
-                    float dx = pos.x - last_pos.x;
-                    float dy = -(pos.y - last_pos.y);
+                    float dx = pos.x - last_mouse_pos.x;
+                    float dy = pos.y - last_mouse_pos.y;
+#if USE_USB_HID_DEVICE
+                    HIDMode current_mode = usbHID.getHidMode();
+                    if (current_mode == HID_MODE_MOUSE)
+                    {
+                        dy = usbHID.getInvertMouseY() ? -dy : dy;
+                    }
+                    else if (current_mode == HID_MODE_GAMEPAD)
+                    {
+                        dy = usbHID.getGamepadInvertY() ? -dy : dy;
+                    }
+#else
+                    dy = -dy; // Default: inverted
+#endif
                     accum_dx += dx;
                     accum_dy += dy;
-                    last_pos = pos;
+                    last_mouse_pos = pos;
 
                     // Rate limit mouse updates to ~60 Hz (every 4th point)
                     if (new_count == 2 || ++mouse_counter >= 4)
                     {
 #if USE_USB_HID_DEVICE
-                        usbHID.updateMouseFromGesture(accum_dx, accum_dy);
+                        HIDMode hid_mode = usbHID.getHidMode();
+                        if (hid_mode == HID_MODE_GAMEPAD)
+                        {
+                            usbHID.updateGamepadFromGesture(accum_dx, accum_dy);
+                        }
+                        else if (hid_mode == HID_MODE_MOUSE)
+                        {
+                            usbHID.updateMouseFromGesture(accum_dx, accum_dy);
+                        }
 #endif
                         accum_dx = 0.0f;
                         accum_dy = 0.0f;
@@ -1004,6 +1152,7 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
 
                 if (webServer)
                 {
+#if GESTURE_RATE_LIMIT_ENABLE
                     // Rate limit: Only broadcast every 4th position (~60 Hz instead of 234 Hz)
                     // This provides smooth visualization while preventing WebSocket overflow
                     static int broadcast_counter = 0;
@@ -1011,20 +1160,18 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                     // Always broadcast position[1] immediately after tracking starts
                     if (new_count == 2 || ++broadcast_counter >= 4)
                     {
+                        const Position2D &pos = positions[new_count - 1];
                         webServer->broadcastGesturePoint(pos.x, pos.y);
                         broadcast_counter = 0;
                     }
+#else
+                    // Broadcast all gesture points at full IMU rate (~234 Hz)
+                    const Position2D &pos = positions[new_count - 1];
+                    webServer->broadcastGesturePoint(pos.x, pos.y);
+#endif
                 }
             }
         }
-    }
-    else
-    {
-        // Reset mouse gesture state when tracking stops
-        has_last_pos = false;
-        accum_dx = 0.0f;
-        accum_dy = 0.0f;
-        mouse_counter = 0;
     }
 }
 
@@ -1036,6 +1183,15 @@ bool WandBLEClient::requestWandInfo()
     vTaskDelay(pdMS_TO_TICKS(50)); // Small delay between commands
     success &= wandCommands.requestProductInfo();
     return success;
+}
+
+const char *WandBLEClient::getWandMacAddress() const
+{
+    static char mac_str[18]; // "XX:XX:XX:XX:XX:XX" + null terminator
+    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+             peer_addr.val[5], peer_addr.val[4], peer_addr.val[3],
+             peer_addr.val[2], peer_addr.val[1], peer_addr.val[0]);
+    return mac_str;
 }
 
 void WandBLEClient::processFirmwareVersion(const uint8_t *data, size_t length)

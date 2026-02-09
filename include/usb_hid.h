@@ -4,11 +4,27 @@
 #include <stdbool.h>
 #include <nvs.h>
 
+enum HIDMode : uint8_t
+{
+    HID_MODE_MOUSE = 0,
+    HID_MODE_KEYBOARD = 1,
+    HID_MODE_GAMEPAD = 2,
+    HID_MODE_DISABLED = 3
+};
+
 // USB HID Settings structure stored in NVS
 struct USBHIDSettings
 {
-    float mouse_sensitivity;    // Mouse sensitivity multiplier (default 1.0)
-    uint8_t spell_keycodes[73]; // Maps spell 0-72 to keycodes (default all 0 = disabled)
+    float mouse_sensitivity;           // Mouse sensitivity multiplier (default 1.0)
+    uint8_t spell_keycodes[73];        // Maps spell 0-72 to keycodes (default all 0 = disabled)
+    bool invert_mouse_y;               // Invert Y-axis (true = wand up -> cursor up, false = wand up -> cursor down)
+    bool mouse_enabled;                // Enable/disable mouse input (default true)
+    bool keyboard_enabled;             // Enable/disable keyboard input (default true)
+    uint8_t hid_mode;                  // Current HID mode (see HIDMode)
+    float gamepad_sensitivity;         // Gamepad sensitivity multiplier (default 1.0)
+    float gamepad_deadzone;            // Gamepad dead zone (0.0-0.5)
+    bool gamepad_invert_y;             // Invert gamepad Y-axis
+    uint8_t spell_gamepad_buttons[73]; // Maps spell 0-72 to gamepad button (0=disabled, 1-10)
 };
 
 // USB HID Manager for Magic Caster Wand
@@ -26,8 +42,13 @@ public:
     // Mouse functions (gyro-based air mouse)
     void updateMouse(float gyro_x, float gyro_y, float gyro_z);
     void updateMouseFromGesture(float delta_x, float delta_y);
+    void updateGamepadFromGesture(float delta_x, float delta_y);
+    void setGamepadButtons(uint16_t buttons);
     void mouseClick(uint8_t button); // 1=left, 2=right, 4=middle
     void setMouseSensitivity(float sensitivity);
+    void setGamepadSensitivityValue(float sensitivity);
+    void setGamepadDeadzoneValue(float deadzone);
+    void setGamepadInvertY(bool invert) { settings.gamepad_invert_y = invert; }
 
     // Keyboard functions (spell to key mapping)
     void sendKeyPress(uint8_t keycode, uint8_t modifiers = 0);
@@ -40,8 +61,20 @@ public:
     void setEnabled(bool mouse_enabled, bool keyboard_enabled);
     bool isMouseEnabled() const { return mouse_enabled; }
     bool isKeyboardEnabled() const { return keyboard_enabled; }
+    void setMouseEnabled(bool enabled)
+    {
+        mouse_enabled = enabled;
+        settings.mouse_enabled = enabled;
+    }
+    void setKeyboardEnabled(bool enabled)
+    {
+        keyboard_enabled = enabled;
+        settings.keyboard_enabled = enabled;
+    }
     void setInSpellMode(bool spelling) { in_spell_mode = spelling; }
     bool isInSpellMode() const { return in_spell_mode; }
+    void setHidMode(HIDMode mode);
+    HIDMode getHidMode() const { return static_cast<HIDMode>(settings.hid_mode); }
 
     // Settings management
     bool loadSettings();
@@ -50,12 +83,21 @@ public:
     void setMouseSensitivityValue(float sensitivity);
     void setSpellKeycode(const char *spell_name, uint8_t keycode);
     uint8_t getSpellKeycode(const char *spell_name) const;
+    void setSpellGamepadButton(const char *spell_name, uint8_t button);
+    uint8_t getSpellGamepadButton(const char *spell_name) const;
+    void sendSpellGamepadForSpell(const char *spell_name);
 
     // Settings accessors for web interface
     float getMouseSensitivity() const { return settings.mouse_sensitivity; }
     float getMouseSensitivityValue() const { return mouse_sensitivity; }
+    float getGamepadSensitivity() const { return settings.gamepad_sensitivity; }
+    float getGamepadDeadzone() const { return settings.gamepad_deadzone; }
+    bool getGamepadInvertY() const { return settings.gamepad_invert_y; }
     const USBHIDSettings &getSettings() const { return settings; }
     const uint8_t *getSpellKeycodes() const { return settings.spell_keycodes; }
+    const uint8_t *getSpellGamepadButtons() const { return settings.spell_gamepad_buttons; }
+    bool getInvertMouseY() const { return settings.invert_mouse_y; }
+    void setInvertMouseY(bool invert) { settings.invert_mouse_y = invert; }
 
 private:
     bool initialized;
@@ -69,9 +111,15 @@ private:
     int8_t accumulated_x;
     int8_t accumulated_y;
     uint8_t button_state;
+    uint16_t gamepad_buttons;
+    int8_t gamepad_lx;
+    int8_t gamepad_ly;
+    int8_t gamepad_rx;
+    int8_t gamepad_ry;
 
     // Helper functions
     void sendMouseReport(int8_t x, int8_t y, int8_t wheel, uint8_t buttons);
     void sendKeyboardReport(uint8_t modifiers, uint8_t keycode);
+    void sendGamepadReport(int8_t lx, int8_t ly, int8_t rx, int8_t ry, uint16_t buttons, uint8_t hat);
     uint8_t getKeycodeForSpell(const char *spell_name);
 };

@@ -5,7 +5,12 @@
 #include "usb_hid.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_wifi.h"
+#include "esp_spiffs.h"
 #include <string.h>
+#include <stdio.h>
+#include <errno.h>
+#include <dirent.h>
 
 // Forward declaration from main.cpp
 #if USE_USB_HID_DEVICE
@@ -13,6 +18,49 @@ extern USBHIDManager usbHID;
 #endif
 
 static const char *TAG = "web_server";
+
+// Helper to sanitize strings for JSON output (removes non-printable and non-UTF-8 chars)
+static void sanitize_for_json(char *dest, const char *src, size_t max_len)
+{
+    if (!src || !dest || max_len == 0)
+    {
+        if (dest && max_len > 0)
+            dest[0] = '\0';
+        return;
+    }
+
+    size_t j = 0;
+    for (size_t i = 0; src[i] != '\0' && j < max_len - 1; i++)
+    {
+        unsigned char c = src[i];
+        // Allow printable ASCII and basic UTF-8 continuation bytes
+        // Skip control characters, NULL, and invalid UTF-8
+        if (c >= 32 && c < 127) // Printable ASCII
+        {
+            // Escape JSON special characters
+            if (c == '"' || c == '\\' || c == '/')
+            {
+                if (j + 1 < max_len - 1)
+                {
+                    dest[j++] = '\\';
+                    dest[j++] = c;
+                }
+            }
+            else
+            {
+                dest[j++] = c;
+            }
+        }
+        else if (c >= 128) // Potential UTF-8 multi-byte character
+        {
+            // Simple UTF-8 validation: just accept bytes >= 128 as-is
+            // for proper UTF-8 sequences (conservative approach)
+            dest[j++] = c;
+        }
+        // Skip control characters (0-31, 127)
+    }
+    dest[j] = '\0';
+}
 
 // Helper for broadcasting WebSocket messages with auto-disconnect detection
 static void broadcast_to_clients(httpd_handle_t server, int *clients, int *count,
@@ -98,6 +146,22 @@ static const char index_html[] = R"rawliteral(
         }
         .battery-low {
             color: #ff4444;
+        }
+        .battery-warning {
+            display: none;
+            background: rgba(255, 152, 0, 0.15);
+            border-left: 4px solid #ff9800;
+            padding: 12px 15px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-size: 0.9em;
+            line-height: 1.5;
+        }
+        .battery-warning.show {
+            display: block;
+        }
+        .battery-warning strong {
+            color: #ff9800;
         }
         .spell-box { 
             font-size: 2em; 
@@ -275,6 +339,79 @@ static const char index_html[] = R"rawliteral(
                 width: 100%;
             }
         }
+        /* Toast notification styles */
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #333;
+            color: #fff;
+            padding: 16px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 1em;
+            z-index: 10000;
+            animation: slideIn 0.3s ease-out, slideOut 0.3s ease-in 2.7s;
+            opacity: 0;
+        }
+        .toast.success {
+            background: #2d5016;
+            border-left: 4px solid #4CAF50;
+        }
+        .toast.error {
+            background: #5a1a1a;
+            border-left: 4px solid #f44336;
+        }
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        @keyframes slideOut {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+        }
+        /* Spell Learning Controls */
+        .spell-learning-controls {
+            background: #333;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .spell-learning-controls select {
+            flex: 1;
+            min-width: 250px;
+            padding: 12px;
+            background: #222;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 5px;
+            font-size: 1em;
+        }
+        /* Desktop scaling - reduce everything by 30% for better overview */
+        @media (min-width: 901px) {
+            body {
+                zoom: 0.7;
+            }
+        }
     </style>
 </head>
 <body>
@@ -300,6 +437,17 @@ static const char index_html[] = R"rawliteral(
             </div>
             <div id="scanStatus" style="margin-top: 10px; color: #888;"></div>
             <div id="scanResults" class="scan-results"></div>
+            
+            <div id="battery-warning" class="battery-warning">
+                <strong>⚠️ Low Battery Warning</strong><br>
+                Wand battery is critically low (&lt;40%). The wand is in power-saving mode with limited functionality:
+                <ul style="margin: 8px 0 0 20px; padding: 0;">
+                    <li>Battery monitoring: ✓ Active</li>
+                    <li>Wand control &amp; spells: ✗ Disabled</li>
+                    <li>IMU &amp; gesture tracking: ✗ Disabled</li>
+                </ul>
+                <strong>Please charge the wand to restore full functionality.</strong>
+            </div>
         </div>
         
         <div class="ble-controls">
@@ -311,6 +459,13 @@ static const char index_html[] = R"rawliteral(
                     <div class="spell-mappings-container">
                         <div id="spell-mappings" class="spell-mappings-grid">
                             <!-- Spell mappings will be populated by JavaScript -->
+                        </div>
+                    </div>
+                    <h4 style="margin: 20px 0 10px 0; color: #4CAF50;">Spell Mappings (Gamepad Buttons)</h4>
+                    <input type="text" id="gamepad-spell-filter" class="spell-mapping-search" placeholder="Filter spells..." oninput="filterGamepadMappings()">
+                    <div class="spell-mappings-container">
+                        <div id="gamepad-mappings" class="spell-mappings-grid">
+                            <!-- Gamepad mappings will be populated by JavaScript -->
                         </div>
                     </div>
                 </div>
@@ -325,6 +480,65 @@ static const char index_html[] = R"rawliteral(
                             </div>
                             <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Lower = less movement, Higher = more movement</div>
                         </div>
+                        <div style="margin: 10px 0;">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="invert-mouse-y" style="width: 18px; height: 18px;">
+                                <span>Invert Y-Axis (wand up = cursor up)</span>
+                            </label>
+                            <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Checked = inverted (typical), Unchecked = natural</div>
+                        </div>
+                        <div style="margin: 10px 0; border-top: 1px solid #444; padding-top: 10px;">
+                            <label style="display: block; margin-bottom: 5px;">HID Mode:</label>
+                            <select id="hid-mode" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                                <option value="0">Mouse</option>
+                                <option value="1">Keyboard</option>
+                                <option value="2">Gamepad</option>
+                                <option value="3">Disabled</option>
+                            </select>
+                            <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Only one mode can be active at a time</div>
+                        </div>
+                        <div style="margin: 10px 0; border-top: 1px solid #444; padding-top: 10px;">
+                            <label style="display: block; margin-bottom: 5px;">Gamepad Sensitivity:</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <input type="range" id="gamepad-sensitivity" min="0.1" max="5.0" step="0.1" value="1.0" style="flex-grow: 1;">
+                                <span id="gpad-sens-value" style="width: 40px; text-align: right;">1.0x</span>
+                            </div>
+                        </div>
+                        <div style="margin: 10px 0;">
+                            <label style="display: block; margin-bottom: 5px;">Gamepad Dead Zone:</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <input type="range" id="gamepad-deadzone" min="0.0" max="0.5" step="0.01" value="0.05" style="flex-grow: 1;">
+                                <span id="gpad-deadzone-value" style="width: 50px; text-align: right;">0.05</span>
+                            </div>
+                        </div>
+                        <div style="margin: 10px 0;">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="invert-gamepad-y" style="width: 18px; height: 18px;">
+                                <span>Invert Gamepad Y-Axis</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div style="background: #222; padding: 10px; border-radius: 5px; margin-top: 10px;">
+                        <h4 style="margin: 0 0 10px 0; color: #4CAF50;">Home Assistant MQTT Settings</h4>
+                        <div style="margin: 10px 0;">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="ha-mqtt-enabled" style="width: 18px; height: 18px;">
+                                <span>Enable MQTT</span>
+                            </label>
+                        </div>
+                        <div style="margin: 10px 0;">
+                            <label style="display: block; margin-bottom: 5px;">MQTT Broker URI:</label>
+                            <input type="text" id="mqtt-broker" placeholder="mqtt://192.168.1.100:1883" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                        </div>
+                        <div style="margin: 10px 0;">
+                            <label style="display: block; margin-bottom: 5px;">MQTT Username:</label>
+                            <input type="text" id="mqtt-username" placeholder="homeassistant" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                        </div>
+                        <div style="margin: 10px 0;">
+                            <label style="display: block; margin-bottom: 5px;">MQTT Password:</label>
+                            <input type="password" id="mqtt-password" placeholder="password" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                        </div>
+                        <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Restart required after changing MQTT settings</div>
                     </div>
                 </div>
             </div>
@@ -332,6 +546,73 @@ static const char index_html[] = R"rawliteral(
                 <button class="button" onclick="saveSettings()">💾 Save Settings</button>
                 <button class="button secondary" onclick="loadSettings()">🔄 Load Settings</button>
                 <button class="button danger" onclick="resetSettings()">🔁 Reset to Defaults</button>
+            </div>
+        </div>
+        
+        <div class="ble-controls">
+            <h3>📡 WiFi & Network Settings</h3>
+            <div style="background: #222; padding: 15px; border-radius: 5px; margin-bottom: 10px;">
+                <h4 style="margin: 0 0 10px 0; color: #4CAF50;">WiFi Client Mode</h4>
+                <div style="margin: 10px 0;">
+                    <button class="button" onclick="scanWifi()">🔍 Scan WiFi Networks</button>
+                    <div id="wifiScanStatus" style="margin-top: 10px; color: #888;"></div>
+                    <div id="wifiResults" class="scan-results" style="max-height: 200px;"></div>
+                </div>
+                <div style="margin: 10px 0;">
+                    <label style="display: block; margin-bottom: 5px;">WiFi SSID:</label>
+                    <input type="text" id="wifi-ssid" placeholder="Your WiFi Network" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                </div>
+                <div style="margin: 10px 0;">
+                    <label style="display: block; margin-bottom: 5px;">WiFi Password:</label>
+                    <input type="password" id="wifi-password" placeholder="WiFi Password" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                </div>
+                <button class="button" onclick="connectWifi()">🌐 Connect to WiFi</button>
+                <div id="wifiConnectStatus" style="margin-top: 10px; color: #888;"></div>
+            </div>
+            <div style="background: #222; padding: 15px; border-radius: 5px; margin-bottom: 10px;">
+                <h4 style="margin: 0 0 10px 0; color: #4CAF50;">📡 Hotspot / Access Point Info</h4>
+                <div style="margin: 10px 0; padding: 10px; background: #333; border-radius: 4px;">
+                    <div style="margin-bottom: 8px;">
+                        <span style="color: #888;">Default Hotspot SSID:</span>
+                        <span style="color: #4CAF50; margin-left: 8px; font-weight: bold;">HP-esp32-wand-gateway</span>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <span style="color: #888;">Security:</span>
+                        <span style="color: #4CAF50; margin-left: 8px;">Open (No Password)</span>
+                    </div>
+                    <div>
+                        <span style="color: #888;">IP Address:</span>
+                        <span style="color: #4CAF50; margin-left: 8px;">192.168.4.1</span>
+                    </div>
+                </div>
+                <div style="font-size: 0.85em; color: #888; margin-top: 10px; padding: 8px; background: rgba(76, 175, 80, 0.1); border-left: 3px solid #4CAF50;">
+                    💡 The device automatically creates this hotspot when no WiFi network is available.
+                </div>
+            </div>
+            <div style="background: #222; padding: 15px; border-radius: 5px;">
+                <h4 style="margin: 0 0 10px 0; color: #4CAF50;">System Control</h4>
+                <div style="margin-bottom: 15px;">
+                    <label style="display: block; margin-bottom: 5px;">WiFi Mode:</label>
+                    <select id="wifi-mode" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444; margin-bottom: 5px;">
+                        <option value="client">Client Mode (Connect to WiFi)</option>
+                        <option value="ap">Hotspot Mode (Access Point)</option>
+                    </select>
+                    <button class="button" onclick="switchWifiMode()">🔄 Switch WiFi Mode</button>
+                    <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Device will restart to apply mode change</div>
+                </div>
+                <div style="margin-bottom: 15px; padding-top: 15px; border-top: 1px solid #444;">
+                    <button class="button danger" onclick="resetToDefaults()">⚠️ Reset to Defaults</button>
+                    <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Clears all settings (WiFi, wand MAC, MQTT)</div>
+                </div>
+                <div style="margin-bottom: 15px; padding-top: 15px; border-top: 1px solid #444;">
+                    <button class="button" onclick="checkNVS()">🔍 Check Saved Settings (NVS)</button>
+                    <div style="font-size: 0.8em; color: #888; margin-top: 5px;">View what's actually stored in memory</div>
+                    <pre id="nvs-debug" style="background: #111; padding: 10px; border-radius: 4px; font-size: 11px; max-height: 200px; overflow-y: auto; display: none; margin-top: 10px;"></pre>
+                </div>
+                <div style="border-top: 1px solid #444; padding-top: 15px;">
+                    <button class="button danger" onclick="rebootDevice()">🔄 Reboot Device</button>
+                    <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Device will restart in 2 seconds</div>
+                </div>
             </div>
         </div>
         
@@ -374,6 +655,17 @@ static const char index_html[] = R"rawliteral(
         
         <div class="spell-box">
             <div id="spell-display">Waiting for spell...</div>
+        </div>
+        
+        <div class="ble-controls">
+            <h3>📚 Spell Learning</h3>
+            <div class="spell-learning-controls">
+                <select id="spell-selector">
+                    <option value="">-- Select a spell to practice --</option>
+                </select>
+                <button class="button" onclick="practiceSpell()">📖 Load Reference</button>
+                <button class="button secondary" onclick="clearReferenceGesture()">🗑️ Clear</button>
+            </div>
         </div>
         
         <h2 style="text-align: center; color: #4CAF50; margin-top: 30px;">Gesture Path</h2>
@@ -428,6 +720,10 @@ static const char index_html[] = R"rawliteral(
         let rawGesturePoints = [];  // Store raw coordinates from ESP32
         let isTracking = false;
         
+        // Gesture reference image for spell practice
+        let referenceGestureImage = null;
+        let referenceGestureLoaded = false;
+        
         // WebSocket connection
         let ws = null;
         
@@ -462,6 +758,9 @@ static const char index_html[] = R"rawliteral(
                     if (data.type === 'wand_status') {
                         wandStatus.textContent = data.connected ? '✓ Connected' : '✗ Disconnected';
                         wandStatus.style.color = data.connected ? '#4CAF50' : '#ff4444';
+                        if (!data.connected) {
+                            clearWandInfo();
+                        }
                     } else if (data.type === 'imu') {
                         updateIMU(data);
                     } else if (data.type === 'spell') {
@@ -587,6 +886,7 @@ static const char index_html[] = R"rawliteral(
         
         function updateBattery(level) {
             const batteryElem = document.getElementById('battery');
+            const warningElem = document.getElementById('battery-warning');
             batteryElem.textContent = level;
             
             // Change color based on battery level
@@ -594,6 +894,13 @@ static const char index_html[] = R"rawliteral(
                 batteryElem.className = 'battery-level battery-low';
             } else {
                 batteryElem.className = 'battery-level';
+            }
+            
+            // Show warning if battery is critically low (<40%)
+            if (level < 40) {
+                warningElem.classList.add('show');
+            } else {
+                warningElem.classList.remove('show');
             }
         }
         
@@ -625,7 +932,30 @@ static const char index_html[] = R"rawliteral(
             gestureCtx.fillStyle = '#000';
             gestureCtx.fillRect(0, 0, gestureCanvas.width, gestureCanvas.height);
             
-            // Draw center crosshair
+            // Draw reference gesture image if loaded (semi-transparent)
+            if (referenceGestureLoaded && referenceGestureImage) {
+                const centerX = gestureCanvas.width / 2;
+                const centerY = gestureCanvas.height / 2;
+                
+                // Scale image to fit canvas while maintaining aspect ratio
+                const maxSize = Math.min(gestureCanvas.width, gestureCanvas.height) * 0.9;
+                const scale = Math.min(maxSize / referenceGestureImage.width, maxSize / referenceGestureImage.height);
+                const scaledWidth = referenceGestureImage.width * scale;
+                const scaledHeight = referenceGestureImage.height * scale;
+                
+                // Draw with 40% opacity as reference
+                gestureCtx.globalAlpha = 0.4;
+                gestureCtx.drawImage(
+                    referenceGestureImage,
+                    centerX - scaledWidth / 2,
+                    centerY - scaledHeight / 2,
+                    scaledWidth,
+                    scaledHeight
+                );
+                gestureCtx.globalAlpha = 1.0;
+            }
+            
+            // Draw center crosshair on top
             gestureCtx.strokeStyle = '#444';
             gestureCtx.lineWidth = 1;
             gestureCtx.beginPath();
@@ -705,6 +1035,131 @@ static const char index_html[] = R"rawliteral(
         
         // Initialize gesture canvas
         clearGestureCanvas();
+        
+        // Spell Learning Functions
+        const SPELL_NAMES = [
+            "The_Force_Spell", "Colloportus", "Colloshoo", "The_Hour_Reversal_Reversal_Charm",
+            "Evanesco", "Herbivicus", "Orchideous", "Brachiabindo", "Meteolojinx", "Riddikulus",
+            "Silencio", "Immobulus", "Confringo", "Petrificus_Totalus", "Flipendo",
+            "The_Cheering_Charm", "Salvio_Hexia", "Pestis_Incendium", "Alohomora", "Protego",
+            "Langlock", "Mucus_Ad_Nauseum", "Flagrate", "Glacius", "Finite", "Anteoculatia",
+            "Expelliarmus", "Expecto_Patronum", "Descendo", "Depulso", "Reducto", "Colovaria",
+            "Aberto", "Confundo", "Densaugeo", "The_Stretching_Jinx", "Entomorphis",
+            "The_Hair_Thickening_Growing_Charm", "Bombarda", "Finestra", "The_Sleeping_Charm",
+            "Rictusempra", "Piertotum_Locomotor", "Expulso", "Impedimenta", "Ascendio",
+            "Incarcerous", "Ventus", "Revelio", "Accio", "Melefors", "Scourgify",
+            "Wingardium_Leviosa", "Nox", "Stupefy", "Spongify", "Lumos", "Appare_Vestigium",
+            "Verdimillious", "Fulgari", "Reparo", "Locomotor", "Quietus", "Everte_Statum",
+            "Incendio", "Aguamenti", "Sonorus", "Cantis", "Arania_Exumai", "Calvorio",
+            "The_Hour_Reversal_Charm", "Vermillious", "The_Pepper-Breath_Hex"
+        ];
+        
+        // Map spell names to SPIFFS filenames (32 char limit including .png)
+        // Some names are shortened to fit SPIFFS filename restrictions
+        const SPELL_FILENAME_MAP = {
+            "The_Hair_Thickening_Growing_Charm": "hair_grow_charm.png",
+            // Default: use lowercase with underscores
+        };
+        
+        function spellNameToFilename(spellName) {
+            // Check if there's a custom mapping
+            if (SPELL_FILENAME_MAP[spellName]) {
+                const mappedFilename = SPELL_FILENAME_MAP[spellName];
+                console.log('[Filename Map] Custom mapping:', spellName, '->', mappedFilename);
+                return mappedFilename;
+            }
+            // Default: convert to lowercase
+            const filename = spellName.toLowerCase() + '.png';
+            console.log('[Filename Map] Default mapping:', spellName, '->', filename);
+            return filename;
+        }
+        
+        function populateSpellSelector() {
+            const selector = document.getElementById('spell-selector');
+            SPELL_NAMES.forEach(spell => {
+                const option = document.createElement('option');
+                option.value = spell;
+                option.textContent = spell.replace(/_/g, ' ');
+                selector.appendChild(option);
+            });
+        }
+        
+        function practiceSpell() {
+            const selector = document.getElementById('spell-selector');
+            const selectedSpell = selector.value;
+            
+            console.log('[Spell Practice] Selected spell:', selectedSpell);
+            
+            if (!selectedSpell) {
+                showToast('Please select a spell to practice', 'error');
+                return;
+            }
+            
+            const filename = spellNameToFilename(selectedSpell);
+            const imageUrl = `/gesture/${filename}`;
+            
+            console.log('[Spell Practice] Loading reference:', filename);
+            
+            // Create image object
+            const img = new Image();
+            
+            img.onload = function() {
+                console.log('[Spell Practice] Reference image loaded:', imageUrl);
+                referenceGestureImage = img;
+                referenceGestureLoaded = true;
+                
+                // Redraw canvas with reference image
+                clearGestureCanvas();
+                drawGesture();
+                
+                showToast(`Reference loaded: ${selectedSpell.replace(/_/g, ' ')}`, 'success');
+            };
+            
+            img.onerror = function() {
+                console.error('[Spell Practice] Failed to load image:', imageUrl);
+                showToast('Failed to load gesture image: ' + filename, 'error');
+            };
+            
+            img.src = imageUrl;
+        }
+        
+        function clearReferenceGesture() {
+            referenceGestureImage = null;
+            referenceGestureLoaded = false;
+            clearGestureCanvas();
+            drawGesture();
+            console.log('[Spell Practice] Reference cleared');
+            showToast('Reference cleared', 'success');
+        }
+        
+        // Initialize spell selector on page load
+        populateSpellSelector();
+        
+        // Toast notification function
+        function showToast(message, type = 'success') {
+            // Remove any existing toasts
+            const existingToasts = document.querySelectorAll('.toast');
+            existingToasts.forEach(toast => toast.remove());
+            
+            // Create new toast
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            
+            // Add to document
+            document.body.appendChild(toast);
+            
+            // Trigger animation by forcing reflow
+            setTimeout(() => {
+                toast.style.opacity = '1';
+            }, 10);
+            
+            // Remove after 3 seconds
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
         
         // BLE Management Functions
         let scanResults = [];
@@ -800,9 +1255,11 @@ static const char index_html[] = R"rawliteral(
             .then(response => response.json())
             .then(data => {
                 console.log('MAC saved:', data);
+                showToast(`Wand selected: ${name || address}`, 'success');
             })
             .catch(error => {
                 console.error('Failed to save MAC:', error);
+                showToast('Failed to save MAC address', 'error');
             });
         }
         
@@ -826,7 +1283,7 @@ static const char index_html[] = R"rawliteral(
         
         function connectWand() {
             if (!selectedMac) {
-                alert('Please select a wand first');
+                showToast('Please select a wand first', 'error');
                 return;
             }
             
@@ -889,6 +1346,20 @@ static const char index_html[] = R"rawliteral(
             }
         }
         
+        function clearWandInfo() {
+            console.log('Clearing wand info (disconnected)');
+            document.getElementById('wand-type').textContent = '-';
+            document.getElementById('wand-firmware').textContent = '-';
+            document.getElementById('wand-serial').textContent = '-';
+            document.getElementById('wand-sku').textContent = '-';
+            document.getElementById('wand-device-id').textContent = '-';
+            document.getElementById('battery').textContent = '--';
+            document.getElementById('battery').className = 'battery-level';
+            document.getElementById('battery-warning').classList.remove('show');
+            // Clear button states
+            updateButtons(false, false, false, false);
+        }
+        
         function updateButtons(b1, b2, b3, b4) {
             document.getElementById('btn1').textContent = b1 ? '●' : '○';
             document.getElementById('btn2').textContent = b2 ? '●' : '○';
@@ -900,20 +1371,7 @@ static const char index_html[] = R"rawliteral(
             document.getElementById('btn4').style.color = b4 ? '#4CAF50' : '#666';
         }
         
-        // Spell names list (73 spells - must match server-side SPELL_NAMES array)
-        const SPELL_NAMES = [
-            "The_Force_Spell", "Colloportus", "Colloshoo", "The_Hour_Reversal_Reversal_Charm", "Evanesco", 
-            "Herbivicus", "Orchideous", "Brachiabindo", "Meteolojinx", "Riddikulus", "Silencio", "Immobulus", 
-            "Confringo", "Petrificus_Totalus", "Flipendo", "The_Cheering_Charm", "Salvio_Hexia", "Pestis_Incendium", 
-            "Alohomora", "Protego", "Langlock", "Mucus_Ad_Nauseum", "Flagrate", "Glacius", "Finite", "Anteoculatia", 
-            "Expelliarmus", "Expecto_Patronum", "Descendo", "Depulso", "Reducto", "Colovaria", "Aberto", "Confundo", 
-            "Densaugeo", "The_Stretching_Jinx", "Entomorphis", "The_Hair_Thickening_Growing_Charm", "Bombarda", 
-            "Finestra", "The_Sleeping_Charm", "Rictusempra", "Piertotum_Locomotor", "Expulso", "Impedimenta", 
-            "Ascendio", "Incarcerous", "Ventus", "Revelio", "Accio", "Melefors", "Scourgify", "Wingardium_Leviosa", 
-            "Nox", "Stupefy", "Spongify", "Lumos", "Appare_Vestigium", "Verdimillious", "Fulgari", "Reparo", 
-            "Locomotor", "Quietus", "Everte_Statum", "Incendio", "Aguamenti", "Sonorus", "Cantis", "Arania_Exumai", 
-            "Calvorio", "The_Hour_Reversal_Charm", "Vermillious", "The_Pepper-Breath_Hex"
-        ];
+        // SPELL_NAMES already declared above in Spell Learning section (line ~1033)
 
         const KEY_OPTIONS = [
             { group: 'Common', label: 'None', value: 0 },
@@ -1027,6 +1485,20 @@ static const char index_html[] = R"rawliteral(
             { group: 'Function', label: 'F24', value: 0x73 }
         ];
 
+        const GAMEPAD_BUTTON_OPTIONS = [
+            { label: 'Disabled', value: 0 },
+            { label: 'Button 1', value: 1 },
+            { label: 'Button 2', value: 2 },
+            { label: 'Button 3', value: 3 },
+            { label: 'Button 4', value: 4 },
+            { label: 'Button 5', value: 5 },
+            { label: 'Button 6', value: 6 },
+            { label: 'Button 7', value: 7 },
+            { label: 'Button 8', value: 8 },
+            { label: 'Button 9', value: 9 },
+            { label: 'Button 10', value: 10 }
+        ];
+
         function buildKeySelectOptions(select) {
             const groups = new Map();
             KEY_OPTIONS.forEach((opt) => {
@@ -1041,6 +1513,15 @@ static const char index_html[] = R"rawliteral(
                 groups.get(opt.group).appendChild(option);
             });
             groups.forEach((optgroup) => select.appendChild(optgroup));
+        }
+
+        function buildGamepadSelectOptions(select) {
+            GAMEPAD_BUTTON_OPTIONS.forEach((opt) => {
+                const option = document.createElement('option');
+                option.value = opt.value;
+                option.textContent = opt.label;
+                select.appendChild(option);
+            });
         }
 
         // Populate spell mapping dropdowns
@@ -1067,10 +1548,43 @@ static const char index_html[] = R"rawliteral(
             }
         }
 
+        function populateGamepadMappings() {
+            const container = document.getElementById('gamepad-mappings');
+            container.innerHTML = '';
+
+            for (let i = 0; i < SPELL_NAMES.length; i++) {
+                const spell = SPELL_NAMES[i];
+                const select = document.createElement('select');
+                select.id = `gpad_spell_${i}`;
+                buildGamepadSelectOptions(select);
+
+                const label = document.createElement('label');
+                label.style.cssText = 'font-size: 12px; word-break: break-word;';
+                label.textContent = spell.replace(/_/g, ' ');
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'spell-mapping-item';
+                wrapper.dataset.spellName = spell.toLowerCase().replace(/_/g, ' ');
+                wrapper.appendChild(label);
+                wrapper.appendChild(select);
+                container.appendChild(wrapper);
+            }
+        }
+
         function filterSpellMappings() {
             const input = document.getElementById('spell-filter');
             const filter = input.value.trim().toLowerCase();
-            const items = document.querySelectorAll('.spell-mapping-item');
+            const items = document.querySelectorAll('#spell-mappings .spell-mapping-item');
+            items.forEach((item) => {
+                const name = item.dataset.spellName || '';
+                item.style.display = name.includes(filter) ? 'flex' : 'none';
+            });
+        }
+
+        function filterGamepadMappings() {
+            const input = document.getElementById('gamepad-spell-filter');
+            const filter = input.value.trim().toLowerCase();
+            const items = document.querySelectorAll('#gamepad-mappings .spell-mapping-item');
             items.forEach((item) => {
                 const name = item.dataset.spellName || '';
                 item.style.display = name.includes(filter) ? 'flex' : 'none';
@@ -1082,18 +1596,46 @@ static const char index_html[] = R"rawliteral(
             const value = parseFloat(e.target.value);
             document.getElementById('sens-value').textContent = value.toFixed(1) + 'x';
         });
+
+        // Gamepad sensitivity slider handler
+        document.getElementById('gamepad-sensitivity').addEventListener('input', (e) => {
+            const value = parseFloat(e.target.value);
+            document.getElementById('gpad-sens-value').textContent = value.toFixed(1) + 'x';
+        });
+
+        // Gamepad deadzone slider handler
+        document.getElementById('gamepad-deadzone').addEventListener('input', (e) => {
+            const value = parseFloat(e.target.value);
+            document.getElementById('gpad-deadzone-value').textContent = value.toFixed(2);
+        });
         
         // Load and save settings with spell mappings
         function saveSettings() {
             const settings = {
                 mouse_sensitivity: parseFloat(document.getElementById('mouse-sensitivity').value),
-                spells: []
+                invert_mouse_y: document.getElementById('invert-mouse-y').checked,
+                hid_mode: parseInt(document.getElementById('hid-mode').value),
+                gamepad_sensitivity: parseFloat(document.getElementById('gamepad-sensitivity').value),
+                gamepad_deadzone: parseFloat(document.getElementById('gamepad-deadzone').value),
+                gamepad_invert_y: document.getElementById('invert-gamepad-y').checked,
+                ha_mqtt_enabled: document.getElementById('ha-mqtt-enabled').checked,
+                mqtt_broker: document.getElementById('mqtt-broker').value,
+                mqtt_username: document.getElementById('mqtt-username').value,
+                mqtt_password: document.getElementById('mqtt-password').value,
+                spells: [],
+                gamepad_spells: []
             };
             
             // Collect all spell keycode mappings
             for (let i = 0; i < SPELL_NAMES.length; i++) {
                 const select = document.getElementById(`spell_${i}`);
                 settings.spells.push(parseInt(select.value));
+            }
+
+            // Collect all spell gamepad button mappings
+            for (let i = 0; i < SPELL_NAMES.length; i++) {
+                const select = document.getElementById(`gpad_spell_${i}`);
+                settings.gamepad_spells.push(parseInt(select.value));
             }
             
             fetch('/settings/save', {
@@ -1103,11 +1645,11 @@ static const char index_html[] = R"rawliteral(
             })
             .then(response => response.json())
             .then(data => {
-                alert('✓ Settings saved successfully!');
+                showToast('Settings saved successfully!', 'success');
                 console.log('Settings saved:', data);
             })
             .catch(error => {
-                alert('✗ Failed to save settings');
+                showToast('Failed to save settings', 'error');
                 console.error('Save error:', error);
             });
         }
@@ -1119,6 +1661,17 @@ static const char index_html[] = R"rawliteral(
                     console.log('Settings loaded:', data);
                     document.getElementById('mouse-sensitivity').value = data.mouse_sensitivity || 1.0;
                     document.getElementById('sens-value').textContent = (data.mouse_sensitivity || 1.0).toFixed(1) + 'x';
+                    document.getElementById('invert-mouse-y').checked = data.invert_mouse_y !== false;
+                    document.getElementById('hid-mode').value = (data.hid_mode !== undefined) ? data.hid_mode : 0;
+                    document.getElementById('gamepad-sensitivity').value = data.gamepad_sensitivity || 1.0;
+                    document.getElementById('gpad-sens-value').textContent = (data.gamepad_sensitivity || 1.0).toFixed(1) + 'x';
+                    document.getElementById('gamepad-deadzone').value = (data.gamepad_deadzone !== undefined) ? data.gamepad_deadzone : 0.05;
+                    document.getElementById('gpad-deadzone-value').textContent = ((data.gamepad_deadzone !== undefined) ? data.gamepad_deadzone : 0.05).toFixed(2);
+                    document.getElementById('invert-gamepad-y').checked = data.gamepad_invert_y !== false;
+                    document.getElementById('ha-mqtt-enabled').checked = data.ha_mqtt_enabled !== false;
+                    document.getElementById('mqtt-broker').value = data.mqtt_broker || '';
+                    document.getElementById('mqtt-username').value = data.mqtt_username || '';
+                    document.getElementById('mqtt-password').value = data.mqtt_password || '';
                     
                     // Load spell keycodes
                     if (data.spells && data.spells.length === SPELL_NAMES.length) {
@@ -1129,10 +1682,18 @@ static const char index_html[] = R"rawliteral(
                             }
                         }
                     }
-                    alert('✓ Settings loaded from device');
+                    if (data.gamepad_spells && data.gamepad_spells.length === SPELL_NAMES.length) {
+                        for (let i = 0; i < data.gamepad_spells.length; i++) {
+                            const select = document.getElementById(`gpad_spell_${i}`);
+                            if (select) {
+                                select.value = data.gamepad_spells[i];
+                            }
+                        }
+                    }
+                    showToast('Settings loaded from device', 'success');
                 })
                 .catch(error => {
-                    alert('✗ Failed to load settings');
+                    showToast('Failed to load settings', 'error');
                     console.error('Load error:', error);
                 });
         }
@@ -1148,12 +1709,21 @@ static const char index_html[] = R"rawliteral(
                             const select = document.getElementById(`spell_${i}`);
                             if (select) select.value = 0;
                         }
+                        for (let i = 0; i < SPELL_NAMES.length; i++) {
+                            const select = document.getElementById(`gpad_spell_${i}`);
+                            if (select) select.value = 0;
+                        }
                         document.getElementById('mouse-sensitivity').value = 1.0;
                         document.getElementById('sens-value').textContent = '1.0x';
-                        alert('✓ Settings reset to defaults!');
+                        document.getElementById('gamepad-sensitivity').value = 1.0;
+                        document.getElementById('gpad-sens-value').textContent = '1.0x';
+                        document.getElementById('gamepad-deadzone').value = 0.05;
+                        document.getElementById('gpad-deadzone-value').textContent = '0.05';
+                        document.getElementById('invert-gamepad-y').checked = true;
+                        showToast('Settings reset to defaults!', 'success');
                     })
                     .catch(error => {
-                        alert('✗ Failed to reset settings');
+                        showToast('Failed to reset settings', 'error');
                         console.error('Reset error:', error);
                     });
             }
@@ -1161,12 +1731,225 @@ static const char index_html[] = R"rawliteral(
         
         // Initialize UI
         populateSpellMappings();
+        populateGamepadMappings();
         
         // Load settings on page load
         setTimeout(loadSettings, 2000);
         
         // Load stored MAC on page load
         setTimeout(loadStoredMac, 1000);
+        
+        // WiFi Management Functions
+        function scanWifi() {
+            const btn = event.target;
+            const status = document.getElementById('wifiScanStatus');
+            const results = document.getElementById('wifiResults');
+            
+            btn.disabled = true;
+            btn.textContent = '⏳ Scanning...';
+            status.textContent = 'Scanning for WiFi networks...';
+            results.innerHTML = '';
+            
+            fetch('/wifi/scan', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.networks && data.networks.length > 0) {
+                        status.textContent = `Found ${data.networks.length} network(s)`;
+                        data.networks.forEach(network => {
+                            const item = document.createElement('div');
+                            item.className = 'scan-item';
+                            item.innerHTML = `
+                                <div class="scan-info">
+                                    <div style="font-weight: bold;">${network.ssid}</div>
+                                    <div class="rssi">RSSI: ${network.rssi} dBm | Security: ${network.auth}</div>
+                                </div>
+                                <button class="button" onclick="selectWifiNetwork('${network.ssid}')">Select</button>
+                            `;
+                            results.appendChild(item);
+                        });
+                    } else {
+                        status.textContent = 'No networks found';
+                    }
+                    btn.disabled = false;
+                    btn.textContent = '🔍 Scan WiFi Networks';
+                })
+                .catch(error => {
+                    status.textContent = 'Scan failed: ' + error;
+                    btn.disabled = false;
+                    btn.textContent = '🔍 Scan WiFi Networks';
+                    showToast('WiFi scan failed', 'error');
+                });
+        }
+        
+        function selectWifiNetwork(ssid) {
+            document.getElementById('wifi-ssid').value = ssid;
+            showToast(`Selected: ${ssid}`, 'success');
+        }
+        
+        function connectWifi() {
+            const ssid = document.getElementById('wifi-ssid').value;
+            const password = document.getElementById('wifi-password').value;
+            const status = document.getElementById('wifiConnectStatus');
+            
+            if (!ssid) {
+                showToast('Please enter WiFi SSID', 'error');
+                return;
+            }
+            
+            if (!confirm(`⚠️ Connecting to ${ssid} will reboot the device. Continue?`)) {
+                return;
+            }
+            
+            status.textContent = 'Saving WiFi settings and rebooting...';
+            
+            fetch('/wifi/connect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ssid: ssid, password: password })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    status.textContent = 'Device rebooting to apply WiFi settings...';
+                    showToast('Rebooting to connect to WiFi...', 'success');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 5000);
+                } else {
+                    status.textContent = 'Connection failed: ' + (data.message || 'Unknown error');
+                    showToast('WiFi connection failed', 'error');
+                }
+            })
+            .catch(error => {
+                status.textContent = 'Device rebooting...';
+                showToast('Device rebooting...', 'success');
+                setTimeout(() => {
+                    window.location.reload();
+                }, 5000);
+            });
+        }
+        
+        function rebootDevice() {
+            if (!confirm('⚠️ Are you sure you want to reboot the device?')) {
+                return;
+            }
+            
+            showToast('Rebooting device...', 'success');
+            
+            fetch('/system/reboot', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    showToast('Device rebooting...', 'success');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 5000);
+                })
+                .catch(error => {
+                    showToast('Reboot command sent', 'success');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 5000);
+                });
+        }
+        
+        function switchWifiMode() {
+            const mode = document.getElementById('wifi-mode').value;
+            
+            if (!confirm(`⚠️ Switch to ${mode === 'ap' ? 'Hotspot' : 'Client'} mode? Device will reboot.`)) {
+                return;
+            }
+            
+            showToast('Switching WiFi mode...', 'success');
+            
+            fetch('/system/wifi_mode', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: mode })
+            })
+            .then(response => response.json())
+            .then(data => {
+                showToast('Device rebooting to apply mode change...', 'success');
+                setTimeout(() => {
+                    window.location.reload();
+                }, 5000);
+            })
+            .catch(error => {
+                showToast('Mode change command sent, device rebooting...', 'success');
+                setTimeout(() => {
+                    window.location.reload();
+                }, 5000);
+            });
+        }
+        
+        function resetToDefaults() {
+            if (!confirm('⚠️ WARNING: This will erase ALL settings including WiFi credentials, wand MAC, and MQTT settings. Continue?')) {
+                return;
+            }
+            
+            if (!confirm('⚠️ FINAL CONFIRMATION: Are you absolutely sure? This cannot be undone!')) {
+                return;
+            }
+            
+            showToast('Resetting to defaults...', 'success');
+            
+            fetch('/system/reset_nvs', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    showToast('Settings cleared! Device rebooting...', 'success');
+                    setTimeout(() => {
+                        window.location.href = 'http://192.168.4.1/';
+                    }, 5000);
+                })
+                .catch(error => {
+                    showToast('Reset command sent, device rebooting...', 'success');
+                    setTimeout(() => {
+                        window.location.href = 'http://192.168.4.1/';
+                    }, 5000);
+                });
+        }
+        
+        // Load current WiFi mode and set dropdown
+        function loadWifiMode() {
+            fetch('/system/get_wifi_mode')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.mode) {
+                        const dropdown = document.getElementById('wifi-mode');
+                        if (dropdown) {
+                            dropdown.value = data.mode;
+                            console.log('Current WiFi mode:', data.mode, 'Force AP:', data.force_ap);
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.error('Failed to load WiFi mode:', error);
+                });
+        }
+        
+        // Check NVS stored values
+        function checkNVS() {
+            const debugDiv = document.getElementById('nvs-debug');
+            fetch('/debug/nvs')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.nvs) {
+                        debugDiv.style.display = 'block';
+                        debugDiv.textContent = JSON.stringify(data.nvs, null, 2);
+                        showToast('NVS values retrieved', 'success');
+                    } else {
+                        showToast('Failed to get NVS values', 'error');
+                    }
+                })
+                .catch(error => {
+                    showToast('Error reading NVS: ' + error, 'error');
+                });
+        }
+        
+        // Load WiFi mode when page loads
+        loadWifiMode();
+        
+        // Load settings (including MQTT) when page loads
+        loadSettings();
     </script>
 </body>
 </html>
@@ -1223,10 +2006,76 @@ bool WebServer::begin(uint16_t port)
         return true;
     }
 
+    // Initialize SPIFFS for gesture images
+    ESP_LOGI(TAG, "Initializing SPIFFS for gesture images...");
+    esp_vfs_spiffs_conf_t spiffs_conf = {
+        .base_path = "/spiffs",
+        .partition_label = "spiffs",
+        .max_files = 5,
+        .format_if_mount_failed = true // Auto-format empty partition
+    };
+
+    esp_err_t ret = esp_vfs_spiffs_register(&spiffs_conf);
+    if (ret != ESP_OK)
+    {
+        if (ret == ESP_FAIL)
+        {
+            ESP_LOGW(TAG, "SPIFFS mount failed - partition may be corrupted or not flashed");
+            ESP_LOGW(TAG, "Run './upload_gestures.sh' to flash gesture images");
+        }
+        else if (ret == ESP_ERR_NOT_FOUND)
+        {
+            ESP_LOGW(TAG, "SPIFFS partition not found - check partition table");
+            ESP_LOGW(TAG, "Expected: offset=0x490000, size=0x370000 (3.6MB)");
+        }
+        else
+        {
+            ESP_LOGW(TAG, "SPIFFS init failed (%s) - gesture images unavailable", esp_err_to_name(ret));
+        }
+    }
+    else
+    {
+        size_t total = 0, used = 0;
+        ret = esp_spiffs_info("spiffs", &total, &used);
+        if (ret == ESP_OK)
+        {
+            ESP_LOGI(TAG, "SPIFFS: %d KB total, %d KB used", total / 1024, used / 1024);
+            if (used == 0)
+            {
+                ESP_LOGI(TAG, "SPIFFS is empty - run './upload_gestures.sh' to upload gesture images");
+            }
+            else
+            {
+                // List SPIFFS contents for debugging
+                ESP_LOGI(TAG, "Listing SPIFFS contents:");
+                DIR *dir = opendir("/spiffs");
+                if (dir)
+                {
+                    struct dirent *entry;
+                    int file_count = 0;
+                    while ((entry = readdir(dir)) != NULL && file_count < 10)
+                    {
+                        ESP_LOGI(TAG, "  - %s", entry->d_name);
+                        file_count++;
+                    }
+                    if (file_count == 10)
+                    {
+                        ESP_LOGI(TAG, "  ... (showing first 10 files)");
+                    }
+                    closedir(dir);
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "Failed to open SPIFFS directory for listing");
+                }
+            }
+        }
+    }
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = port;
     config.max_open_sockets = 7;
-    config.max_uri_handlers = 15; // Support 12 handlers + buffer for future endpoints
+    config.max_uri_handlers = 25; // Support all handlers + buffer for future endpoints
     config.lru_purge_enable = true;
 
     if (httpd_start(&server, &config) != ESP_OK)
@@ -1395,9 +2244,131 @@ bool WebServer::begin(uint16_t port)
         ESP_LOGW(TAG, "Settings RESET handler registration FAILED");
     }
 
+    httpd_uri_t wifi_scan = {
+        .uri = "/wifi/scan",
+        .method = HTTP_POST,
+        .handler = wifi_scan_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &wifi_scan) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "WiFi scan handler registration FAILED");
+    }
+
+    httpd_uri_t wifi_connect = {
+        .uri = "/wifi/connect",
+        .method = HTTP_POST,
+        .handler = wifi_connect_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &wifi_connect) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "WiFi connect handler registration FAILED");
+    }
+
+    httpd_uri_t hotspot_settings = {
+        .uri = "/hotspot/settings",
+        .method = HTTP_POST,
+        .handler = hotspot_settings_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &hotspot_settings) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Hotspot settings handler registration FAILED");
+    }
+
+    httpd_uri_t hotspot_get = {
+        .uri = "/hotspot/get",
+        .method = HTTP_GET,
+        .handler = hotspot_get_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &hotspot_get) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Hotspot get handler registration FAILED");
+    }
+
+    httpd_uri_t system_reboot = {
+        .uri = "/system/reboot",
+        .method = HTTP_POST,
+        .handler = system_reboot_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &system_reboot) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "System reboot handler registration FAILED");
+    }
+
+    httpd_uri_t system_wifi_mode = {
+        .uri = "/system/wifi_mode",
+        .method = HTTP_POST,
+        .handler = system_wifi_mode_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &system_wifi_mode) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "System wifi_mode handler registration FAILED");
+    }
+
+    httpd_uri_t system_reset_nvs = {
+        .uri = "/system/reset_nvs",
+        .method = HTTP_POST,
+        .handler = system_reset_nvs_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &system_reset_nvs) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "System reset_nvs handler registration FAILED");
+    }
+
+    httpd_uri_t system_get_wifi_mode = {
+        .uri = "/system/get_wifi_mode",
+        .method = HTTP_GET,
+        .handler = system_get_wifi_mode_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &system_get_wifi_mode) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "System get_wifi_mode handler registration FAILED");
+    }
+
+    httpd_uri_t debug_nvs = {
+        .uri = "/debug/nvs",
+        .method = HTTP_GET,
+        .handler = debug_nvs_handler,
+        .user_ctx = nullptr,
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr};
+    if (httpd_register_uri_handler(server, &debug_nvs) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Debug NVS handler registration FAILED");
+    }
+
+    // Register 404 error handler to intercept gesture image requests
+    // ESP-IDF httpd wildcards don't work well, so use error handler approach
+    ESP_LOGI(TAG, "Registering 404 handler for gesture images");
+    httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, gesture_404_handler);
+
     running = true;
     ESP_LOGI(TAG, "Web server started on port %d", port);
-    ESP_LOGI(TAG, "Registered endpoints: /, /ws, /generate_204, /hotspot-detect.html, /scan, /set_mac, /get_stored_mac, /connect, /disconnect, /settings/get, /settings/save, /settings/reset");
+    ESP_LOGI(TAG, "Registered endpoints: /, /ws, /generate_204, /hotspot-detect.html, /scan, /set_mac, /get_stored_mac, /connect, /disconnect, /settings/get, /settings/save, /settings/reset, /wifi/scan, /wifi/connect, /hotspot/settings, /hotspot/get, /system/reboot, [404:gesture/*]");
     return true;
 }
 
@@ -1708,14 +2679,22 @@ void WebServer::broadcastLowConfidence(const char *spell_name, float confidence)
 void WebServer::broadcastWandInfo(const char *firmware_version, const char *serial_number,
                                   const char *sku, const char *device_id, const char *wand_type)
 {
+    // Sanitize all input strings
+    char safe_fw[32], safe_serial[32], safe_sku[32], safe_devid[32], safe_type[32];
+    sanitize_for_json(safe_fw, firmware_version, sizeof(safe_fw));
+    sanitize_for_json(safe_serial, serial_number, sizeof(safe_serial));
+    sanitize_for_json(safe_sku, sku, sizeof(safe_sku));
+    sanitize_for_json(safe_devid, device_id, sizeof(safe_devid));
+    sanitize_for_json(safe_type, wand_type, sizeof(safe_type));
+
     // Cache the wand info for new clients
     if (xSemaphoreTake(data_mutex, pdMS_TO_TICKS(10)) == pdTRUE)
     {
-        snprintf(cached_data.firmware_version, sizeof(cached_data.firmware_version), "%s", firmware_version ? firmware_version : "");
-        snprintf(cached_data.serial_number, sizeof(cached_data.serial_number), "%s", serial_number ? serial_number : "");
-        snprintf(cached_data.sku, sizeof(cached_data.sku), "%s", sku ? sku : "");
-        snprintf(cached_data.device_id, sizeof(cached_data.device_id), "%s", device_id ? device_id : "");
-        snprintf(cached_data.wand_type, sizeof(cached_data.wand_type), "%s", wand_type ? wand_type : "");
+        snprintf(cached_data.firmware_version, sizeof(cached_data.firmware_version), "%s", safe_fw);
+        snprintf(cached_data.serial_number, sizeof(cached_data.serial_number), "%s", safe_serial);
+        snprintf(cached_data.sku, sizeof(cached_data.sku), "%s", safe_sku);
+        snprintf(cached_data.device_id, sizeof(cached_data.device_id), "%s", safe_devid);
+        snprintf(cached_data.wand_type, sizeof(cached_data.wand_type), "%s", safe_type);
         xSemaphoreGive(data_mutex);
     }
 
@@ -1725,19 +2704,11 @@ void WebServer::broadcastWandInfo(const char *firmware_version, const char *seri
     char json[1024];
     snprintf(json, sizeof(json),
              "{\"type\":\"wand_info\",\"firmware\":\"%s\",\"serial\":\"%s\",\"sku\":\"%s\",\"device_id\":\"%s\",\"wand_type\":\"%s\"}",
-             firmware_version ? firmware_version : "",
-             serial_number ? serial_number : "",
-             sku ? sku : "",
-             device_id ? device_id : "",
-             wand_type ? wand_type : "");
+             safe_fw, safe_serial, safe_sku, safe_devid, safe_type);
     broadcast_to_clients(server, ws_clients, &ws_client_count, client_mutex, json);
 
     ESP_LOGI(TAG, "Wand info broadcast: FW=%s, Serial=%s, SKU=%s, DevID=%s, Type=%s",
-             firmware_version ? firmware_version : "--",
-             serial_number ? serial_number : "--",
-             sku ? sku : "--",
-             device_id ? device_id : "--",
-             wand_type ? wand_type : "--");
+             safe_fw, safe_serial, safe_sku, safe_devid, safe_type);
 }
 
 void WebServer::broadcastButtonPress(bool b1, bool b2, bool b3, bool b4)
@@ -1760,10 +2731,15 @@ void WebServer::broadcastScanResult(const char *address, const char *name, int r
     if (!running || !address || !name)
         return;
 
+    char sanitized_name[64];
+    char sanitized_address[24];
+    sanitize_for_json(sanitized_name, name, sizeof(sanitized_name));
+    sanitize_for_json(sanitized_address, address, sizeof(sanitized_address));
+
     char json[256];
     snprintf(json, sizeof(json),
              "{\"type\":\"scan_result\",\"address\":\"%s\",\"name\":\"%s\",\"rssi\":%d}",
-             address, name, rssi);
+             sanitized_address, sanitized_name, rssi);
     broadcast_to_clients(server, ws_clients, &ws_client_count, client_mutex, json);
 }
 
@@ -1793,13 +2769,17 @@ esp_err_t WebServer::scan_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
+    // Stop any ongoing scan first
+    g_wand_client->stopScan();
+
     // Disconnect wand before scanning (if connected)
     if (g_wand_client->isConnected())
     {
         ESP_LOGI(TAG, "Disconnecting wand before scan");
+        g_wand_client->setUserDisconnectRequested(true);
         g_wand_client->disconnect();
         // Give BLE stack time to process disconnect
-        vTaskDelay(pdMS_TO_TICKS(500));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
     // Start BLE scan for 10 seconds
@@ -1835,6 +2815,27 @@ esp_err_t WebServer::set_mac_handler(httpd_req_t *req)
             strncpy(mac, mac_start, 17);
             mac[17] = '\0';
 
+            // Check if MAC changed
+            char old_mac[18] = {0};
+            bool mac_changed = false;
+
+            nvs_handle_t nvs_handle_read;
+            esp_err_t err_read = nvs_open("storage", NVS_READONLY, &nvs_handle_read);
+            if (err_read == ESP_OK)
+            {
+                size_t old_mac_len = sizeof(old_mac);
+                if (nvs_get_str(nvs_handle_read, "wand_mac", old_mac, &old_mac_len) == ESP_OK)
+                {
+                    mac_changed = (strcmp(old_mac, mac) != 0);
+                    ESP_LOGI(TAG, "MAC change detected: old=%s, new=%s", old_mac, mac);
+                }
+                else
+                {
+                    ESP_LOGI(TAG, "No previous MAC stored, first time setup");
+                }
+                nvs_close(nvs_handle_read);
+            }
+
             // Store in NVS
             nvs_handle_t nvs_handle;
             esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
@@ -1845,6 +2846,17 @@ esp_err_t WebServer::set_mac_handler(httpd_req_t *req)
                 {
                     nvs_commit(nvs_handle);
                     ESP_LOGI(TAG, "Stored wand MAC: %s", mac);
+
+                    // If MAC changed, disconnect current wand and wait longer
+                    if (mac_changed && g_wand_client && g_wand_client->isConnected())
+                    {
+                        ESP_LOGI(TAG, "MAC changed, disconnecting current wand");
+                        g_wand_client->setUserDisconnectRequested(true);
+                        g_wand_client->disconnect();
+                        // Wait longer to ensure clean disconnect before connecting to new wand
+                        vTaskDelay(pdMS_TO_TICKS(2000));
+                    }
+
                     httpd_resp_set_type(req, "application/json");
                     httpd_resp_sendstr(req, "{\"status\":\"success\",\"message\":\"MAC address saved\"}");
                 }
@@ -1924,6 +2936,12 @@ esp_err_t WebServer::connect_handler(httpd_req_t *req)
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
 
+            // Reset user disconnect flag - user is explicitly requesting connection
+            g_wand_client->setUserDisconnectRequested(false);
+
+            // Mark that initialization is needed after this connection
+            g_wand_client->setNeedsInitialization(true);
+
             // Try to connect
             bool success = g_wand_client->connect(mac);
 
@@ -1982,27 +3000,203 @@ esp_err_t WebServer::settings_get_handler(httpd_req_t *req)
 
     // Return mouse sensitivity and all 73 spell keycodes
 #if USE_USB_HID_DEVICE
-    char buffer[2048];
-    int offset = 0;
+    // Allocate buffer on heap to avoid stack overflow
+    char *buffer = (char *)malloc(4096);
+    if (!buffer)
+    {
+        ESP_LOGE(TAG, "Failed to allocate buffer for settings response");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory allocation failed");
+        return ESP_FAIL;
+    }
 
-    offset += snprintf(buffer + offset, sizeof(buffer) - offset, "{\"mouse_sensitivity\": %.2f, \"spells\": [",
-                       usbHID.getMouseSensitivity());
+    int offset = 0;
+    size_t buffer_size = 4096;
+
+    offset += snprintf(buffer + offset, buffer_size - offset,
+                       "{\"mouse_sensitivity\": %.2f, \"invert_mouse_y\": %s, \"hid_mode\": %u, \"gamepad_sensitivity\": %.2f, \"gamepad_deadzone\": %.2f, \"gamepad_invert_y\": %s, \"spells\": [",
+                       usbHID.getMouseSensitivity(),
+                       usbHID.getInvertMouseY() ? "true" : "false",
+                       static_cast<unsigned>(usbHID.getHidMode()),
+                       usbHID.getGamepadSensitivity(),
+                       usbHID.getGamepadDeadzone(),
+                       usbHID.getGamepadInvertY() ? "true" : "false");
 
     const uint8_t *spell_keycodes = usbHID.getSpellKeycodes();
     for (int i = 0; i < 73; i++)
     {
-        offset += snprintf(buffer + offset, sizeof(buffer) - offset, "%d%s",
+        offset += snprintf(buffer + offset, buffer_size - offset, "%d%s",
                            spell_keycodes[i],
                            i < 72 ? "," : "");
     }
 
-    offset += snprintf(buffer + offset, sizeof(buffer) - offset, "]}");
+    // Add HA MQTT setting
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    bool ha_mqtt_enabled = true; // Default: enabled
+    char mqtt_broker[128] = {0};
+    char mqtt_username[64] = {0};
+    char mqtt_password[64] = {0};
+
+    if (err == ESP_OK)
+    {
+        uint8_t ha_mqtt_u8 = 1;
+        nvs_get_u8(nvs_handle, "ha_mqtt_enabled", &ha_mqtt_u8);
+        ha_mqtt_enabled = (ha_mqtt_u8 != 0);
+
+        size_t required_size;
+        err = nvs_get_str(nvs_handle, "mqtt_broker", NULL, &required_size);
+        if (err == ESP_OK && required_size <= sizeof(mqtt_broker))
+        {
+            nvs_get_str(nvs_handle, "mqtt_broker", mqtt_broker, &required_size);
+        }
+
+        err = nvs_get_str(nvs_handle, "mqtt_username", NULL, &required_size);
+        if (err == ESP_OK && required_size <= sizeof(mqtt_username))
+        {
+            nvs_get_str(nvs_handle, "mqtt_username", mqtt_username, &required_size);
+        }
+
+        err = nvs_get_str(nvs_handle, "mqtt_password", NULL, &required_size);
+        if (err == ESP_OK && required_size <= sizeof(mqtt_password))
+        {
+            nvs_get_str(nvs_handle, "mqtt_password", mqtt_password, &required_size);
+        }
+
+        nvs_close(nvs_handle);
+    }
+
+    // Fall back to config.h defaults if NVS is empty (same logic as main.cpp)
+    if (strlen(mqtt_broker) == 0)
+    {
+        snprintf(mqtt_broker, sizeof(mqtt_broker), "mqtt://%s:%d", MQTT_SERVER, MQTT_PORT);
+        ESP_LOGI(TAG, "MQTT broker not in NVS, using config.h default: %s", mqtt_broker);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "MQTT broker loaded from NVS: %s", mqtt_broker);
+    }
+
+    if (strlen(mqtt_username) == 0)
+    {
+        strncpy(mqtt_username, MQTT_USER, sizeof(mqtt_username) - 1);
+        ESP_LOGI(TAG, "MQTT username not in NVS, using config.h default: %s", mqtt_username);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "MQTT username loaded from NVS: %s", mqtt_username);
+    }
+
+    if (strlen(mqtt_password) == 0)
+    {
+        strncpy(mqtt_password, MQTT_PASSWORD, sizeof(mqtt_password) - 1);
+        ESP_LOGI(TAG, "MQTT password not in NVS, using config.h default");
+    }
+    else
+    {
+        ESP_LOGI(TAG, "MQTT password loaded from NVS");
+    }
+
+    const uint8_t *gamepad_buttons = usbHID.getSpellGamepadButtons();
+    offset += snprintf(buffer + offset, buffer_size - offset, "], \"gamepad_spells\": [");
+    for (int i = 0; i < 73; i++)
+    {
+        offset += snprintf(buffer + offset, buffer_size - offset, "%d%s",
+                           gamepad_buttons[i],
+                           i < 72 ? "," : "");
+    }
+
+    offset += snprintf(buffer + offset, buffer_size - offset,
+                       "], \"ha_mqtt_enabled\": %s, \"mqtt_broker\": \"%s\", \"mqtt_username\": \"%s\", \"mqtt_password\": \"%s\"}",
+                       ha_mqtt_enabled ? "true" : "false",
+                       mqtt_broker,
+                       mqtt_username,
+                       mqtt_password);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buffer);
+    free(buffer);
 #else
+    // USB HID disabled, but still return MQTT settings
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    bool ha_mqtt_enabled = true;
+    char mqtt_broker[128] = {0};
+    char mqtt_username[64] = {0};
+    char mqtt_password[64] = {0};
+
+    if (err == ESP_OK)
+    {
+        uint8_t ha_mqtt_u8 = 1;
+        nvs_get_u8(nvs_handle, "ha_mqtt_enabled", &ha_mqtt_u8);
+        ha_mqtt_enabled = (ha_mqtt_u8 != 0);
+
+        size_t required_size;
+        err = nvs_get_str(nvs_handle, "mqtt_broker", NULL, &required_size);
+        if (err == ESP_OK && required_size <= sizeof(mqtt_broker))
+        {
+            nvs_get_str(nvs_handle, "mqtt_broker", mqtt_broker, &required_size);
+        }
+
+        err = nvs_get_str(nvs_handle, "mqtt_username", NULL, &required_size);
+        if (err == ESP_OK && required_size <= sizeof(mqtt_username))
+        {
+            nvs_get_str(nvs_handle, "mqtt_username", mqtt_username, &required_size);
+        }
+
+        err = nvs_get_str(nvs_handle, "mqtt_password", NULL, &required_size);
+        if (err == ESP_OK && required_size <= sizeof(mqtt_password))
+        {
+            nvs_get_str(nvs_handle, "mqtt_password", mqtt_password, &required_size);
+        }
+
+        nvs_close(nvs_handle);
+    }
+
+    // Fall back to config.h defaults if NVS is empty
+    if (strlen(mqtt_broker) == 0)
+    {
+        snprintf(mqtt_broker, sizeof(mqtt_broker), "mqtt://%s:%d", MQTT_SERVER, MQTT_PORT);
+        ESP_LOGI(TAG, "MQTT broker not in NVS, using config.h default: %s", mqtt_broker);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "MQTT broker loaded from NVS: %s", mqtt_broker);
+    }
+
+    if (strlen(mqtt_username) == 0)
+    {
+        strncpy(mqtt_username, MQTT_USER, sizeof(mqtt_username) - 1);
+        ESP_LOGI(TAG, "MQTT username not in NVS, using config.h default: %s", mqtt_username);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "MQTT username loaded from NVS: %s", mqtt_username);
+    }
+
+    if (strlen(mqtt_password) == 0)
+    {
+        strncpy(mqtt_password, MQTT_PASSWORD, sizeof(mqtt_password) - 1);
+        ESP_LOGI(TAG, "MQTT password not in NVS, using config.h default");
+    }
+    else
+    {
+        ESP_LOGI(TAG, "MQTT password loaded from NVS");
+    }
+
+    char response[512];
+    snprintf(response, sizeof(response),
+             "{\"status\":\"usb_hid_disabled\","
+             "\"ha_mqtt_enabled\":%s,"
+             "\"mqtt_broker\":\"%s\","
+             "\"mqtt_username\":\"%s\","
+             "\"mqtt_password\":\"%s\"}",
+             ha_mqtt_enabled ? "true" : "false",
+             mqtt_broker,
+             mqtt_username,
+             mqtt_password);
+
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"status\":\"disabled\",\"message\":\"USB HID not enabled\"}");
+    httpd_resp_sendstr(req, response);
 #endif
     return ESP_OK;
 }
@@ -2039,6 +3233,161 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     {
         sscanf(mouse_ptr, "\"mouse_sensitivity\": %f", &mouse_sens);
         usbHID.setMouseSensitivityValue(mouse_sens);
+    }
+
+    // Parse invert_mouse_y
+    char *invert_ptr = strstr(buffer, "\"invert_mouse_y\"");
+    if (invert_ptr)
+    {
+        bool invert = (strstr(invert_ptr, "true") != NULL);
+        usbHID.setInvertMouseY(invert);
+    }
+
+    // Parse HID mode
+    char *hid_mode_ptr = strstr(buffer, "\"hid_mode\"");
+    if (hid_mode_ptr)
+    {
+        int hid_mode = HID_MODE_MOUSE;
+        sscanf(hid_mode_ptr, "\"hid_mode\": %d", &hid_mode);
+        usbHID.setHidMode(static_cast<HIDMode>(hid_mode));
+    }
+
+    // Parse gamepad sensitivity
+    char *gpad_sens_ptr = strstr(buffer, "\"gamepad_sensitivity\"");
+    if (gpad_sens_ptr)
+    {
+        float gpad_sens = 1.0f;
+        sscanf(gpad_sens_ptr, "\"gamepad_sensitivity\": %f", &gpad_sens);
+        usbHID.setGamepadSensitivityValue(gpad_sens);
+    }
+
+    // Parse gamepad deadzone
+    char *gpad_deadzone_ptr = strstr(buffer, "\"gamepad_deadzone\"");
+    if (gpad_deadzone_ptr)
+    {
+        float gpad_deadzone = 0.05f;
+        sscanf(gpad_deadzone_ptr, "\"gamepad_deadzone\": %f", &gpad_deadzone);
+        usbHID.setGamepadDeadzoneValue(gpad_deadzone);
+    }
+
+    // Parse gamepad invert_y
+    char *gpad_invert_ptr = strstr(buffer, "\"gamepad_invert_y\"");
+    if (gpad_invert_ptr)
+    {
+        bool invert = (strstr(gpad_invert_ptr, "true") != NULL);
+        usbHID.setGamepadInvertY(invert);
+    }
+
+    // Parse HA MQTT enabled
+    char *ha_mqtt_ptr = strstr(buffer, "\"ha_mqtt_enabled\"");
+    if (ha_mqtt_ptr)
+    {
+        bool enabled = (strstr(ha_mqtt_ptr, "true") != NULL);
+        nvs_handle_t nvs_handle;
+        esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+        if (err == ESP_OK)
+        {
+            nvs_set_u8(nvs_handle, "ha_mqtt_enabled", enabled ? 1 : 0);
+            nvs_commit(nvs_handle);
+            nvs_close(nvs_handle);
+            ESP_LOGI(TAG, "HA MQTT enabled setting saved: %d (restart required)", enabled);
+        }
+    }
+
+    // Parse MQTT broker URI
+    char *mqtt_broker_ptr = strstr(buffer, "\"mqtt_broker\":");
+    if (mqtt_broker_ptr)
+    {
+        mqtt_broker_ptr += strlen("\"mqtt_broker\":");
+        while (*mqtt_broker_ptr == ' ')
+            mqtt_broker_ptr++;
+        if (*mqtt_broker_ptr == '\"')
+        {
+            mqtt_broker_ptr++;
+            char *end_quote = strchr(mqtt_broker_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - mqtt_broker_ptr;
+                char mqtt_broker[128] = {0};
+                if (len < sizeof(mqtt_broker))
+                {
+                    strncpy(mqtt_broker, mqtt_broker_ptr, len);
+                    nvs_handle_t nvs_handle;
+                    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+                    if (err == ESP_OK)
+                    {
+                        nvs_set_str(nvs_handle, "mqtt_broker", mqtt_broker);
+                        nvs_commit(nvs_handle);
+                        nvs_close(nvs_handle);
+                        ESP_LOGI(TAG, "MQTT broker saved: %s", mqtt_broker);
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse MQTT username
+    char *mqtt_username_ptr = strstr(buffer, "\"mqtt_username\":");
+    if (mqtt_username_ptr)
+    {
+        mqtt_username_ptr += strlen("\"mqtt_username\":");
+        while (*mqtt_username_ptr == ' ')
+            mqtt_username_ptr++;
+        if (*mqtt_username_ptr == '\"')
+        {
+            mqtt_username_ptr++;
+            char *end_quote = strchr(mqtt_username_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - mqtt_username_ptr;
+                char mqtt_username[64] = {0};
+                if (len < sizeof(mqtt_username))
+                {
+                    strncpy(mqtt_username, mqtt_username_ptr, len);
+                    nvs_handle_t nvs_handle;
+                    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+                    if (err == ESP_OK)
+                    {
+                        nvs_set_str(nvs_handle, "mqtt_username", mqtt_username);
+                        nvs_commit(nvs_handle);
+                        nvs_close(nvs_handle);
+                        ESP_LOGI(TAG, "MQTT username saved");
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse MQTT password
+    char *mqtt_password_ptr = strstr(buffer, "\"mqtt_password\":");
+    if (mqtt_password_ptr)
+    {
+        mqtt_password_ptr += strlen("\"mqtt_password\":");
+        while (*mqtt_password_ptr == ' ')
+            mqtt_password_ptr++;
+        if (*mqtt_password_ptr == '\"')
+        {
+            mqtt_password_ptr++;
+            char *end_quote = strchr(mqtt_password_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - mqtt_password_ptr;
+                char mqtt_password[64] = {0};
+                if (len < sizeof(mqtt_password))
+                {
+                    strncpy(mqtt_password, mqtt_password_ptr, len);
+                    nvs_handle_t nvs_handle;
+                    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+                    if (err == ESP_OK)
+                    {
+                        nvs_set_str(nvs_handle, "mqtt_password", mqtt_password);
+                        nvs_commit(nvs_handle);
+                        nvs_close(nvs_handle);
+                        ESP_LOGI(TAG, "MQTT password saved");
+                    }
+                }
+            }
+        }
     }
 
     // Parse spell keycodes array
@@ -2080,7 +3429,47 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
             }
         }
     }
+
+    // Parse gamepad spell button array
+    char *gpad_ptr = strstr(buffer, "\"gamepad_spells\":");
+    if (gpad_ptr)
+    {
+        gpad_ptr = strchr(gpad_ptr, '[');
+        if (gpad_ptr)
+        {
+            extern const char *SPELL_NAMES[73];
+            char *end_bracket = strchr(gpad_ptr, ']');
+            if (end_bracket)
+            {
+                int spell_idx = 0;
+                const char *parse_ptr = gpad_ptr + 1;
+
+                while (spell_idx < 73 && parse_ptr < end_bracket)
+                {
+                    int button = 0;
+                    int matched = sscanf(parse_ptr, "%d", &button);
+                    if (matched == 1)
+                    {
+                        usbHID.setSpellGamepadButton(SPELL_NAMES[spell_idx], (uint8_t)button);
+                        spell_idx++;
+                        parse_ptr = strchr(parse_ptr, ',');
+                        if (parse_ptr)
+                            parse_ptr++;
+                        else
+                            parse_ptr = end_bracket;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                ESP_LOGI(TAG, "Parsed %d gamepad spell mappings", spell_idx);
+            }
+        }
+    }
 #endif
+
+    ESP_LOGI(TAG, "Settings save complete. MQTT settings saved to NVS (reboot required to apply)");
 
     // Save to NVS
 #if USE_USB_HID_DEVICE
@@ -2099,8 +3488,123 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 #else
+    // USB HID disabled, but still parse and save MQTT settings
+    // Parse HA MQTT enabled
+    char *ha_mqtt_ptr = strstr(buffer, "\"ha_mqtt_enabled\"");
+    if (ha_mqtt_ptr)
+    {
+        bool enabled = (strstr(ha_mqtt_ptr, "true") != NULL);
+        nvs_handle_t nvs_handle;
+        esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+        if (err == ESP_OK)
+        {
+            nvs_set_u8(nvs_handle, "ha_mqtt_enabled", enabled ? 1 : 0);
+            nvs_commit(nvs_handle);
+            nvs_close(nvs_handle);
+            ESP_LOGI(TAG, "HA MQTT enabled setting saved: %d (restart required)", enabled);
+        }
+    }
+
+    // Parse MQTT broker URI
+    char *mqtt_broker_ptr = strstr(buffer, "\"mqtt_broker\":");
+    if (mqtt_broker_ptr)
+    {
+        mqtt_broker_ptr += strlen("\"mqtt_broker\":");
+        while (*mqtt_broker_ptr == ' ')
+            mqtt_broker_ptr++;
+        if (*mqtt_broker_ptr == '\"')
+        {
+            mqtt_broker_ptr++;
+            char *end_quote = strchr(mqtt_broker_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - mqtt_broker_ptr;
+                char mqtt_broker[128] = {0};
+                if (len < sizeof(mqtt_broker))
+                {
+                    strncpy(mqtt_broker, mqtt_broker_ptr, len);
+                    nvs_handle_t nvs_handle;
+                    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+                    if (err == ESP_OK)
+                    {
+                        nvs_set_str(nvs_handle, "mqtt_broker", mqtt_broker);
+                        nvs_commit(nvs_handle);
+                        nvs_close(nvs_handle);
+                        ESP_LOGI(TAG, "MQTT broker saved: %s", mqtt_broker);
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse MQTT username
+    char *mqtt_username_ptr = strstr(buffer, "\"mqtt_username\":");
+    if (mqtt_username_ptr)
+    {
+        mqtt_username_ptr += strlen("\"mqtt_username\":");
+        while (*mqtt_username_ptr == ' ')
+            mqtt_username_ptr++;
+        if (*mqtt_username_ptr == '\"')
+        {
+            mqtt_username_ptr++;
+            char *end_quote = strchr(mqtt_username_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - mqtt_username_ptr;
+                char mqtt_username[64] = {0};
+                if (len < sizeof(mqtt_username))
+                {
+                    strncpy(mqtt_username, mqtt_username_ptr, len);
+                    nvs_handle_t nvs_handle;
+                    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+                    if (err == ESP_OK)
+                    {
+                        nvs_set_str(nvs_handle, "mqtt_username", mqtt_username);
+                        nvs_commit(nvs_handle);
+                        nvs_close(nvs_handle);
+                        ESP_LOGI(TAG, "MQTT username saved");
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse MQTT password
+    char *mqtt_password_ptr = strstr(buffer, "\"mqtt_password\":");
+    if (mqtt_password_ptr)
+    {
+        mqtt_password_ptr += strlen("\"mqtt_password\":");
+        while (*mqtt_password_ptr == ' ')
+            mqtt_password_ptr++;
+        if (*mqtt_password_ptr == '\"')
+        {
+            mqtt_password_ptr++;
+            char *end_quote = strchr(mqtt_password_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - mqtt_password_ptr;
+                char mqtt_password[64] = {0};
+                if (len < sizeof(mqtt_password))
+                {
+                    strncpy(mqtt_password, mqtt_password_ptr, len);
+                    nvs_handle_t nvs_handle;
+                    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+                    if (err == ESP_OK)
+                    {
+                        nvs_set_str(nvs_handle, "mqtt_password", mqtt_password);
+                        nvs_commit(nvs_handle);
+                        nvs_close(nvs_handle);
+                        ESP_LOGI(TAG, "MQTT password saved");
+                    }
+                }
+            }
+        }
+    }
+
+    ESP_LOGI(TAG, "MQTT settings saved to NVS (USB HID disabled, restart required to apply)");
+
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"status\":\"disabled\",\"message\":\"USB HID not enabled\"}");
+    httpd_resp_sendstr(req, "{\"status\":\"success\",\"message\":\"MQTT settings saved (restart required)\"}");
     free(buffer);
     return ESP_OK;
 #endif
@@ -2128,4 +3632,806 @@ esp_err_t WebServer::settings_reset_handler(httpd_req_t *req)
     httpd_resp_sendstr(req, "{\"status\":\"disabled\",\"message\":\"USB HID not enabled\"}");
     return ESP_OK;
 #endif
+}
+
+esp_err_t WebServer::wifi_scan_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "wifi_scan_handler called!");
+
+    // Get current WiFi mode
+    wifi_mode_t current_mode;
+    esp_err_t err = esp_wifi_get_mode(&current_mode);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to get WiFi mode: %s", esp_err_to_name(err));
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Failed to get WiFi mode\",\"networks\":[]}");
+        return ESP_OK;
+    }
+
+    // If in AP-only mode, switch to APSTA mode temporarily
+    bool mode_changed = false;
+    if (current_mode == WIFI_MODE_AP)
+    {
+        ESP_LOGI(TAG, "Switching from AP to APSTA mode for scanning");
+        err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to set APSTA mode: %s", esp_err_to_name(err));
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Failed to set scan mode\",\"networks\":[]}");
+            return ESP_OK;
+        }
+        mode_changed = true;
+    }
+
+    // Configure scan to find all available APs
+    wifi_scan_config_t scan_config = {};
+    scan_config.ssid = NULL;
+    scan_config.bssid = NULL;
+    scan_config.channel = 0;
+    scan_config.show_hidden = false;
+    scan_config.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+    scan_config.scan_time.active.min = 100;
+    scan_config.scan_time.active.max = 300;
+    scan_config.scan_time.passive = 0;
+
+    // Start WiFi scan (blocking)
+    err = esp_wifi_scan_start(&scan_config, true);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "WiFi scan failed: %s", esp_err_to_name(err));
+
+        // Restore original mode if we changed it
+        if (mode_changed)
+        {
+            esp_wifi_set_mode(WIFI_MODE_AP);
+        }
+
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Scan failed\",\"networks\":[]}");
+        return ESP_OK;
+    }
+
+    // Get number of APs found
+    uint16_t ap_count = 0;
+    esp_wifi_scan_get_ap_num(&ap_count);
+
+    ESP_LOGI(TAG, "Found %d access points", ap_count);
+
+    if (ap_count == 0)
+    {
+        // Restore original mode if we changed it
+        if (mode_changed)
+        {
+            ESP_LOGI(TAG, "Restoring AP mode");
+            esp_wifi_set_mode(WIFI_MODE_AP);
+        }
+
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":true,\"networks\":[]}");
+        return ESP_OK;
+    }
+
+    // Limit to max 20 networks to avoid memory issues
+    if (ap_count > 20)
+    {
+        ap_count = 20;
+    }
+
+    // Allocate memory for AP records
+    wifi_ap_record_t *ap_records = (wifi_ap_record_t *)malloc(sizeof(wifi_ap_record_t) * ap_count);
+    if (!ap_records)
+    {
+        ESP_LOGE(TAG, "Failed to allocate memory for AP records");
+
+        // Restore original mode if we changed it
+        if (mode_changed)
+        {
+            esp_wifi_set_mode(WIFI_MODE_AP);
+        }
+
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Memory allocation failed\",\"networks\":[]}");
+        return ESP_OK;
+    }
+
+    // Get AP records BEFORE restoring mode (mode change clears scan results!)
+    err = esp_wifi_scan_get_ap_records(&ap_count, ap_records);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to get AP records: %s", esp_err_to_name(err));
+        free(ap_records);
+
+        // Restore original mode if we changed it
+        if (mode_changed)
+        {
+            esp_wifi_set_mode(WIFI_MODE_AP);
+        }
+
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Failed to get records\",\"networks\":[]}");
+        return ESP_OK;
+    }
+
+    // Now restore original mode after getting records
+    if (mode_changed)
+    {
+        ESP_LOGI(TAG, "Restoring AP mode");
+        esp_wifi_set_mode(WIFI_MODE_AP);
+    }
+
+    // Build JSON response
+    char *response = (char *)malloc(8192);
+    if (!response)
+    {
+        free(ap_records);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Memory allocation failed\",\"networks\":[]}");
+        return ESP_OK;
+    }
+
+    int offset = snprintf(response, 8192, "{\"success\":true,\"networks\":[");
+
+    for (int i = 0; i < ap_count; i++)
+    {
+        const char *auth_mode = "OPEN";
+        switch (ap_records[i].authmode)
+        {
+        case WIFI_AUTH_OPEN:
+            auth_mode = "OPEN";
+            break;
+        case WIFI_AUTH_WEP:
+            auth_mode = "WEP";
+            break;
+        case WIFI_AUTH_WPA_PSK:
+            auth_mode = "WPA";
+            break;
+        case WIFI_AUTH_WPA2_PSK:
+            auth_mode = "WPA2";
+            break;
+        case WIFI_AUTH_WPA_WPA2_PSK:
+            auth_mode = "WPA/WPA2";
+            break;
+        case WIFI_AUTH_WPA3_PSK:
+            auth_mode = "WPA3";
+            break;
+        case WIFI_AUTH_WPA2_WPA3_PSK:
+            auth_mode = "WPA2/WPA3";
+            break;
+        default:
+            auth_mode = "UNKNOWN";
+            break;
+        }
+
+        // Escape any special characters in SSID
+        char escaped_ssid[64];
+        const char *src = (const char *)ap_records[i].ssid;
+        char *dst = escaped_ssid;
+        int max_len = sizeof(escaped_ssid) - 1;
+
+        while (*src && max_len > 1)
+        {
+            if (*src == '"' || *src == '\\')
+            {
+                if (max_len > 2)
+                {
+                    *dst++ = '\\';
+                    max_len--;
+                }
+            }
+            *dst++ = *src++;
+            max_len--;
+        }
+        *dst = '\0';
+
+        offset += snprintf(response + offset, 8192 - offset,
+                           "%s{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":\"%s\",\"channel\":%d}",
+                           i > 0 ? "," : "",
+                           escaped_ssid,
+                           ap_records[i].rssi,
+                           auth_mode,
+                           ap_records[i].primary);
+
+        if (offset >= 8000)
+            break;
+    }
+
+    offset += snprintf(response + offset, 8192 - offset, "]}");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, response);
+
+    free(response);
+    free(ap_records);
+
+    ESP_LOGI(TAG, "WiFi scan completed successfully with %d networks", ap_count);
+    return ESP_OK;
+}
+
+esp_err_t WebServer::wifi_connect_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "wifi_connect_handler called!");
+
+    // Read the POST body
+    int content_len = req->content_len;
+    char *buffer = (char *)malloc(content_len + 1);
+    if (!buffer)
+    {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Allocation failed");
+        return ESP_FAIL;
+    }
+
+    int read_len = httpd_req_recv(req, buffer, content_len);
+    if (read_len != content_len)
+    {
+        free(buffer);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read request body");
+        return ESP_FAIL;
+    }
+
+    buffer[content_len] = 0;
+    ESP_LOGI(TAG, "Received WiFi connect request: %s", buffer);
+
+    // Parse SSID and password
+    char ssid[32] = {0};
+    char password[64] = {0};
+
+    char *ssid_ptr = strstr(buffer, "\"ssid\":");
+    if (ssid_ptr)
+    {
+        ssid_ptr += strlen("\"ssid\":");
+        while (*ssid_ptr == ' ')
+            ssid_ptr++;
+        if (*ssid_ptr == '\"')
+        {
+            ssid_ptr++;
+            char *end_quote = strchr(ssid_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - ssid_ptr;
+                if (len < sizeof(ssid))
+                {
+                    strncpy(ssid, ssid_ptr, len);
+                }
+            }
+        }
+    }
+
+    char *password_ptr = strstr(buffer, "\"password\":");
+    if (password_ptr)
+    {
+        password_ptr += strlen("\"password\":");
+        while (*password_ptr == ' ')
+            password_ptr++;
+        if (*password_ptr == '\"')
+        {
+            password_ptr++;
+            char *end_quote = strchr(password_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - password_ptr;
+                if (len < sizeof(password))
+                {
+                    strncpy(password, password_ptr, len);
+                }
+            }
+        }
+    }
+
+    // Save WiFi credentials to NVS
+    if (strlen(ssid) > 0)
+    {
+        nvs_handle_t nvs_handle;
+        esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+        if (err == ESP_OK)
+        {
+            nvs_set_str(nvs_handle, "wifi_ssid", ssid);
+            nvs_set_str(nvs_handle, "wifi_password", password);
+            nvs_commit(nvs_handle);
+            nvs_close(nvs_handle);
+            ESP_LOGI(TAG, "WiFi credentials saved to NVS: SSID=%s", ssid);
+        }
+    }
+
+    // Send response indicating reboot will occur
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"WiFi credentials saved. Rebooting to apply changes...\"}");
+
+    free(buffer);
+
+    // Schedule reboot to apply WiFi changes
+    ESP_LOGI(TAG, "WiFi configuration updated. Rebooting in 2 seconds...");
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    esp_restart();
+
+    return ESP_OK;
+}
+
+esp_err_t WebServer::hotspot_settings_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "hotspot_settings_handler called!");
+
+    // Read the POST body
+    int content_len = req->content_len;
+    char *buffer = (char *)malloc(content_len + 1);
+    if (!buffer)
+    {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Allocation failed");
+        return ESP_FAIL;
+    }
+
+    int read_len = httpd_req_recv(req, buffer, content_len);
+    if (read_len != content_len)
+    {
+        free(buffer);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read request body");
+        return ESP_FAIL;
+    }
+
+    buffer[content_len] = 0;
+    ESP_LOGI(TAG, "Received hotspot settings: %s", buffer);
+
+    // Parse settings
+    bool enabled = (strstr(buffer, "\"enabled\":true") != NULL);
+    char ssid[32] = {0};
+    char password[64] = {0};
+    int channel = 1;
+
+    char *ssid_ptr = strstr(buffer, "\"ssid\":");
+    if (ssid_ptr)
+    {
+        ssid_ptr += strlen("\"ssid\":");
+        while (*ssid_ptr == ' ')
+            ssid_ptr++;
+        if (*ssid_ptr == '\"')
+        {
+            ssid_ptr++;
+            char *end_quote = strchr(ssid_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - ssid_ptr;
+                if (len < sizeof(ssid))
+                {
+                    strncpy(ssid, ssid_ptr, len);
+                }
+            }
+        }
+    }
+
+    char *password_ptr = strstr(buffer, "\"password\":");
+    if (password_ptr)
+    {
+        password_ptr += strlen("\"password\":");
+        while (*password_ptr == ' ')
+            password_ptr++;
+        if (*password_ptr == '\"')
+        {
+            password_ptr++;
+            char *end_quote = strchr(password_ptr, '\"');
+            if (end_quote)
+            {
+                size_t len = end_quote - password_ptr;
+                if (len < sizeof(password))
+                {
+                    strncpy(password, password_ptr, len);
+                }
+            }
+        }
+    }
+
+    char *channel_ptr = strstr(buffer, "\"channel\":");
+    if (channel_ptr)
+    {
+        sscanf(channel_ptr, "\"channel\":%d", &channel);
+    }
+
+    // Save hotspot settings to NVS
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK)
+    {
+        nvs_set_u8(nvs_handle, "hotspot_enabled", enabled ? 1 : 0);
+        if (strlen(ssid) > 0)
+        {
+            nvs_set_str(nvs_handle, "hotspot_ssid", ssid);
+        }
+        if (strlen(password) > 0)
+        {
+            nvs_set_str(nvs_handle, "hotspot_password", password);
+        }
+        nvs_set_u8(nvs_handle, "hotspot_channel", (uint8_t)channel);
+        nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
+        ESP_LOGI(TAG, "Hotspot settings saved: enabled=%d, SSID=%s, channel=%d", enabled, ssid, channel);
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"Hotspot settings saved. Rebooting to apply changes...\"}");
+
+    free(buffer);
+
+    // Schedule reboot to apply hotspot changes
+    ESP_LOGI(TAG, "Hotspot configuration updated. Rebooting in 2 seconds...");
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    esp_restart();
+
+    return ESP_OK;
+}
+
+esp_err_t WebServer::hotspot_get_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "hotspot_get_handler called!");
+
+    // Load hotspot settings from NVS
+    char hotspot_ssid[32] = {0};
+    char hotspot_password[64] = {0};
+    uint8_t hotspot_channel = 6;
+    bool hotspot_enabled = false;
+
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err == ESP_OK)
+    {
+        uint8_t enabled = 0;
+        nvs_get_u8(nvs_handle, "hotspot_enabled", &enabled);
+        hotspot_enabled = (enabled != 0);
+
+        size_t required_size;
+        err = nvs_get_str(nvs_handle, "hotspot_ssid", NULL, &required_size);
+        if (err == ESP_OK && required_size > 0 && required_size <= sizeof(hotspot_ssid))
+        {
+            nvs_get_str(nvs_handle, "hotspot_ssid", hotspot_ssid, &required_size);
+        }
+
+        err = nvs_get_str(nvs_handle, "hotspot_password", NULL, &required_size);
+        if (err == ESP_OK && required_size > 0 && required_size <= sizeof(hotspot_password))
+        {
+            nvs_get_str(nvs_handle, "hotspot_password", hotspot_password, &required_size);
+        }
+
+        uint8_t channel = 6;
+        nvs_get_u8(nvs_handle, "hotspot_channel", &channel);
+        if (channel >= 1 && channel <= 13)
+        {
+            hotspot_channel = channel;
+        }
+
+        nvs_close(nvs_handle);
+    }
+
+    // Build JSON response
+    char response[512];
+    snprintf(response, sizeof(response),
+             "{\"success\":true,\"enabled\":%s,\"ssid\":\"%s\",\"password\":\"%s\",\"channel\":%d}",
+             hotspot_enabled ? "true" : "false",
+             hotspot_ssid,
+             hotspot_password,
+             hotspot_channel);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, response);
+
+    return ESP_OK;
+}
+
+esp_err_t WebServer::system_reboot_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "system_reboot_handler called! Rebooting in 2 seconds...");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"Rebooting device...\"}");
+
+    // Schedule reboot after a short delay to allow response to be sent
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    esp_restart();
+
+    return ESP_OK;
+}
+
+esp_err_t WebServer::system_wifi_mode_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "system_wifi_mode_handler called!");
+
+    // Read request body
+    char buf[100];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0)
+    {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"No data received\"}");
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    // Parse JSON to extract mode
+    // Expected: {"mode":"client"} or {"mode":"ap"}
+    bool force_ap = false;
+    if (strstr(buf, "\"ap\"") != nullptr)
+    {
+        force_ap = true;
+    }
+
+    ESP_LOGI(TAG, "Setting force_ap_mode to %d", force_ap ? 1 : 0);
+
+    // Save to NVS
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK)
+    {
+        err = nvs_set_u8(nvs_handle, "force_ap_mode", force_ap ? 1 : 0);
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "Failed to save force_ap_mode to NVS");
+        }
+        nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Failed to open NVS for force_ap_mode");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"WiFi mode will change after reboot\"}");
+
+    // Schedule reboot after a short delay to allow response to be sent
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    esp_restart();
+
+    return ESP_OK;
+}
+
+esp_err_t WebServer::system_reset_nvs_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "system_reset_nvs_handler called! Clearing ALL NVS settings...");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"Resetting to defaults...\"}");
+
+    // Allow response to be sent
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    // Erase NVS partition
+    esp_err_t err = nvs_flash_erase();
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(TAG, "NVS erased successfully");
+        // Reinitialize NVS
+        err = nvs_flash_init();
+        if (err == ESP_OK)
+        {
+            ESP_LOGI(TAG, "NVS reinitialized successfully");
+        }
+        else
+        {
+            ESP_LOGW(TAG, "NVS reinit failed: %s", esp_err_to_name(err));
+        }
+    }
+    else
+    {
+        ESP_LOGW(TAG, "NVS erase failed: %s", esp_err_to_name(err));
+    }
+
+    // Reboot after delay
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+
+    return ESP_OK;
+}
+
+esp_err_t WebServer::system_get_wifi_mode_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "system_get_wifi_mode_handler called");
+
+    // Check force_ap_mode flag from NVS
+    bool force_ap = false;
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err == ESP_OK)
+    {
+        uint8_t ap_mode = 0;
+        err = nvs_get_u8(nvs_handle, "force_ap_mode", &ap_mode);
+        if (err == ESP_OK && ap_mode == 1)
+        {
+            force_ap = true;
+        }
+        nvs_close(nvs_handle);
+    }
+
+    // Also check current WiFi mode
+    wifi_mode_t current_mode;
+    esp_wifi_get_mode(&current_mode);
+
+    char response[200];
+    snprintf(response, sizeof(response),
+             "{\"success\":true,\"mode\":\"%s\",\"current_wifi_mode\":\"%s\",\"force_ap\":%s}",
+             force_ap ? "ap" : "client",
+             current_mode == WIFI_MODE_AP ? "AP" : (current_mode == WIFI_MODE_STA ? "STA" : "APSTA"),
+             force_ap ? "true" : "false");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, response);
+
+    return ESP_OK;
+}
+
+esp_err_t WebServer::debug_nvs_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "debug_nvs_handler called - showing stored NVS values");
+
+    char response[1024];
+    char wifi_ssid[32] = {0};
+    char wifi_password[64] = {0};
+    char wand_mac[18] = {0};
+    char mqtt_broker[128] = {0};
+    char mqtt_username[64] = {0};
+    char mqtt_password[64] = {0};
+    bool ha_mqtt_enabled = false;
+    bool force_ap_mode = false;
+
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err == ESP_OK)
+    {
+        size_t required_size;
+
+        // WiFi credentials
+        required_size = sizeof(wifi_ssid);
+        nvs_get_str(nvs_handle, "wifi_ssid", wifi_ssid, &required_size);
+
+        required_size = sizeof(wifi_password);
+        nvs_get_str(nvs_handle, "wifi_password", wifi_password, &required_size);
+
+        // Wand MAC
+        required_size = sizeof(wand_mac);
+        nvs_get_str(nvs_handle, "wand_mac", wand_mac, &required_size);
+
+        // MQTT settings
+        uint8_t mqtt_enabled = 0;
+        nvs_get_u8(nvs_handle, "ha_mqtt_enabled", &mqtt_enabled);
+        ha_mqtt_enabled = (mqtt_enabled != 0);
+
+        required_size = sizeof(mqtt_broker);
+        nvs_get_str(nvs_handle, "mqtt_broker", mqtt_broker, &required_size);
+
+        required_size = sizeof(mqtt_username);
+        nvs_get_str(nvs_handle, "mqtt_username", mqtt_username, &required_size);
+
+        required_size = sizeof(mqtt_password);
+        nvs_get_str(nvs_handle, "mqtt_password", mqtt_password, &required_size);
+
+        // WiFi mode
+        uint8_t ap_mode = 0;
+        nvs_get_u8(nvs_handle, "force_ap_mode", &ap_mode);
+        force_ap_mode = (ap_mode != 0);
+
+        nvs_close(nvs_handle);
+    }
+
+    snprintf(response, sizeof(response),
+             "{\"success\":true,"
+             "\"nvs\":{"
+             "\"wifi_ssid\":\"%s\","
+             "\"wifi_password\":\"%s\","
+             "\"wand_mac\":\"%s\","
+             "\"mqtt_broker\":\"%s\","
+             "\"mqtt_username\":\"%s\","
+             "\"mqtt_password\":\"%s\","
+             "\"ha_mqtt_enabled\":%s,"
+             "\"force_ap_mode\":%s"
+             "}}",
+             wifi_ssid,
+             strlen(wifi_password) > 0 ? "***" : "",
+             wand_mac,
+             mqtt_broker,
+             mqtt_username,
+             strlen(mqtt_password) > 0 ? "***" : "",
+             ha_mqtt_enabled ? "true" : "false",
+             force_ap_mode ? "true" : "false");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, response);
+
+    ESP_LOGI(TAG, "NVS Debug: mqtt_broker='%s', mqtt_username='%s', ha_mqtt_enabled=%d",
+             mqtt_broker, mqtt_username, ha_mqtt_enabled);
+
+    return ESP_OK;
+}
+
+// Custom 404 handler that intercepts gesture image requests
+esp_err_t WebServer::gesture_404_handler(httpd_req_t *req, httpd_err_code_t error)
+{
+    // Check if this is a gesture image request
+    const char *uri = req->uri;
+    if (strncmp(uri, "/gesture/", 9) == 0)
+    {
+        ESP_LOGI(TAG, "404 handler intercepted gesture request: %s", uri);
+        // This is a gesture request - serve the image
+        return gesture_image_handler(req);
+    }
+
+    // Not a gesture request - send normal 404
+    ESP_LOGW(TAG, "404 Not Found: %s", uri);
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "URI not found");
+    return ESP_FAIL;
+}
+
+esp_err_t WebServer::gesture_image_handler(httpd_req_t *req)
+{
+    // Extract spell name from URI: /gesture/<spell_name>.png
+    const char *uri = req->uri;
+    const char *prefix = "/gesture/";
+    size_t prefix_len = strlen(prefix);
+
+    ESP_LOGI(TAG, "Gesture request received: %s", uri);
+
+    if (strncmp(uri, prefix, prefix_len) != 0)
+    {
+        ESP_LOGW(TAG, "Invalid gesture URI (missing prefix): %s", uri);
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+
+    // Get filename (spell_name.png)
+    const char *filename_start = uri + prefix_len;
+    char filepath[128];
+    snprintf(filepath, sizeof(filepath), "/spiffs/%s", filename_start);
+
+    ESP_LOGI(TAG, "Looking for gesture image: %s", filepath);
+
+    // Open file from SPIFFS
+    FILE *file = fopen(filepath, "r");
+    if (!file)
+    {
+        ESP_LOGE(TAG, "Gesture image not found: %s (errno: %d - %s)",
+                 filepath, errno, strerror(errno));
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+
+    // Get file size
+    fseek(file, 0, SEEK_END);
+    size_t file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    ESP_LOGI(TAG, "Serving gesture image: %s (size: %zu bytes)", filepath, file_size);
+
+    // Set content type and headers
+    httpd_resp_set_type(req, "image/png");
+    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400"); // Cache for 1 day
+
+    // Allocate buffer for file transfer
+    char *buffer = (char *)malloc(1024);
+    if (!buffer)
+    {
+        fclose(file);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    // Stream file to client
+    size_t bytes_remaining = file_size;
+    while (bytes_remaining > 0)
+    {
+        size_t chunk_size = (bytes_remaining > 1024) ? 1024 : bytes_remaining;
+        size_t bytes_read = fread(buffer, 1, chunk_size, file);
+
+        if (bytes_read > 0)
+        {
+            httpd_resp_send_chunk(req, buffer, bytes_read);
+            bytes_remaining -= bytes_read;
+        }
+        else
+        {
+            break; // EOF or error
+        }
+    }
+
+    // Finish response
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    free(buffer);
+    fclose(file);
+    return ESP_OK;
 }

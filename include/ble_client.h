@@ -62,6 +62,8 @@ private:
     uint8_t lastButtonState;
     uint8_t last_battery_level;
     bool userDisconnectRequested; // Track user-initiated disconnects from web interface
+    bool needsInitialization;     // Track if initialization is needed after web-initiated connection
+    bool batteryOnlyMode;         // True if wand only exposed battery service (low battery power-saving)
 
     // Wand information
     char firmware_version[32];
@@ -117,6 +119,10 @@ public:
     void setUserDisconnectRequested(bool requested) { userDisconnectRequested = requested; }
     bool isUserDisconnectRequested() const { return userDisconnectRequested; }
 
+    // Track if initialization is needed after web-initiated connection
+    void setNeedsInitialization(bool needs) { needsInitialization = needs; }
+    bool getNeedsInitialization() const { return needsInitialization; }
+
     // IMU streaming control
     bool startIMUStreaming();
     bool stopIMUStreaming();
@@ -134,6 +140,19 @@ public:
     uint8_t getBatteryLevel();
     uint8_t getLastBatteryLevel() const { return last_battery_level; }
     void updateBatteryLevel(uint8_t level) { last_battery_level = level; }
+
+    // Check if wand is in battery-only power-saving mode (only battery service exposed)
+    bool isBatteryOnlyMode() const { return batteryOnlyMode; }
+    void setBatteryOnlyMode(bool mode) { batteryOnlyMode = mode; }
+
+    // Trigger connection callback (for internal use by static callbacks)
+    void triggerConnectionCallback(bool connected)
+    {
+        if (connectionCallback)
+        {
+            connectionCallback(connected);
+        }
+    }
 
     // Callbacks
     void onSpellDetected(SpellDetectedCallback callback) { spellCallback = callback; }
@@ -158,6 +177,7 @@ public:
     const char *getSKU() const { return sku; }
     const char *getDeviceId() const { return device_id; }
     const char *getWandType() const { return wand_type; }
+    const char *getWandMacAddress() const;
 
     // Status
     bool isStreaming() const { return imuStreaming; }

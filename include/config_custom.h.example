@@ -1,0 +1,40 @@
+#ifndef CONFIG_CUSTOM_H
+#define CONFIG_CUSTOM_H
+
+// Custom Configuration Template
+// Copy this file to config_custom.h and customize as needed
+// config_custom.h is gitignored and will override default settings
+
+// Example: Override wand MAC address
+// #undef WAND_MAC_ADDRESS
+// #define WAND_MAC_ADDRESS "F2:93:16:1A:CA:96"
+
+// Example: Enable Home Assistant integration
+// #undef ENABLE_HOME_ASSISTANT
+// #define ENABLE_HOME_ASSISTANT 1
+// #undef USE_WIFI_AP_MODE
+// #define USE_WIFI_AP_MODE 1
+
+// Example: Override WiFi credentials
+// #undef WIFI_SSID
+// #define WIFI_SSID "MyNetwork"
+// #undef WIFI_PASSWORD
+// #define WIFI_PASSWORD "MyPassword"
+
+// Example: Override MQTT settings
+// #undef MQTT_SERVER
+// #define MQTT_SERVER "192.168.1.50"
+// #undef MQTT_USER
+// #define MQTT_USER "myuser"
+// #undef MQTT_PASSWORD
+// #define MQTT_PASSWORD "mypassword"
+
+// Example: Enable USB HID
+// #undef USE_USB_HID_DEVICE
+// #define USE_USB_HID_DEVICE 1
+
+// Example: Disable gesture rate limiting for full detail (234Hz)
+// #undef GESTURE_RATE_LIMIT_ENABLE
+// #define GESTURE_RATE_LIMIT_ENABLE 0
+
+#endif // CONFIG_CUSTOM_H
