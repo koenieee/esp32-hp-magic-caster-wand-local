@@ -1054,15 +1054,48 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
             {
                 float dx = pos.x - last_mouse_pos.x;
                 float dy = pos.y - last_mouse_pos.y;
+                float original_dy = dy; // Store original for logging
 #if USE_USB_HID_DEVICE
                 HIDMode current_mode = usbHID.getHidMode();
                 if (current_mode == HID_MODE_MOUSE)
                 {
-                    dy = usbHID.getInvertMouseY() ? -dy : dy;
+                    bool invert = usbHID.getInvertMouseY();
+                    dy = invert ? -dy : dy;
+
+                    // Log occasionally to debug axis inversion (every 100 samples)
+                    static int debug_counter = 0;
+                    if (++debug_counter >= 100)
+                    {
+                        debug_counter = 0;
+                        ESP_LOGI(TAG, "🖱️  MOUSE mode | Y: original=%.3f, invert=%s, final=%.3f (up wand should give original=%s)",
+                                 original_dy, invert ? "INVERTED" : "NORMAL", dy,
+                                 original_dy > 0 ? "POSITIVE" : original_dy < 0 ? "NEGATIVE"
+                                                                                : "ZERO");
+                    }
                 }
                 else if (current_mode == HID_MODE_GAMEPAD)
                 {
-                    dy = usbHID.getGamepadInvertY() ? -dy : dy;
+                    bool invert = usbHID.getGamepadInvertY();
+                    dy = invert ? -dy : dy;
+
+                    // Log occasionally to debug axis inversion (every 100 samples)
+                    static int gpad_debug_counter = 0;
+                    if (++gpad_debug_counter >= 100)
+                    {
+                        gpad_debug_counter = 0;
+                        ESP_LOGI(TAG, "🎮 GAMEPAD mode | Y: original=%.3f, invert=%s, final=%.3f",
+                                 original_dy, invert ? "INVERTED" : "NORMAL", dy);
+                    }
+                }
+                else
+                {
+                    // KEYBOARD or DISABLED mode - still process for WebSocket
+                    static int other_debug_counter = 0;
+                    if (++other_debug_counter >= 100)
+                    {
+                        other_debug_counter = 0;
+                        ESP_LOGI(TAG, "⌨️  OTHER mode (%d) | No axis inversion applied", current_mode);
+                    }
                 }
 #else
                 dy = -dy;     // Default: inverted
@@ -1113,15 +1146,36 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                 {
                     float dx = pos.x - last_mouse_pos.x;
                     float dy = pos.y - last_mouse_pos.y;
+                    float original_dy = dy; // Store original for logging
 #if USE_USB_HID_DEVICE
                     HIDMode current_mode = usbHID.getHidMode();
                     if (current_mode == HID_MODE_MOUSE)
                     {
-                        dy = usbHID.getInvertMouseY() ? -dy : dy;
+                        bool invert = usbHID.getInvertMouseY();
+                        dy = invert ? -dy : dy;
+
+                        // Log occasionally to debug axis inversion (every 200 samples for websocket path)
+                        static int ws_debug_counter = 0;
+                        if (++ws_debug_counter >= 200)
+                        {
+                            ws_debug_counter = 0;
+                            ESP_LOGI(TAG, "🖱️  Mouse Y (WS): original=%.3f, invert=%s, final=%.3f",
+                                     original_dy, invert ? "true" : "false", dy);
+                        }
                     }
                     else if (current_mode == HID_MODE_GAMEPAD)
                     {
-                        dy = usbHID.getGamepadInvertY() ? -dy : dy;
+                        bool invert = usbHID.getGamepadInvertY();
+                        dy = invert ? -dy : dy;
+
+                        // Log occasionally to debug axis inversion (every 200 samples for websocket path)
+                        static int ws_gpad_debug_counter = 0;
+                        if (++ws_gpad_debug_counter >= 200)
+                        {
+                            ws_gpad_debug_counter = 0;
+                            ESP_LOGI(TAG, "🎮 Gamepad Y (WS): original=%.3f, invert=%s, final=%.3f",
+                                     original_dy, invert ? "true" : "false", dy);
+                        }
                     }
 #else
                     dy = -dy; // Default: inverted

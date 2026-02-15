@@ -454,6 +454,16 @@ static const char index_html[] = R"rawliteral(
             <h3>⚙️ Spell & Mouse Settings</h3>
             <div class="settings-grid">
                 <div>
+                    <div style="font-size: 0.9em; color: #4CAF50; margin-bottom: 15px; padding: 10px; background: rgba(76, 175, 80, 0.1); border-left: 3px solid #4CAF50; border-radius: 4px;">
+                        <strong>📝 How Spell-to-Key Mapping Works:</strong><br>
+                        1. Perform a gesture/spell with your wand<br>
+                        2. The device detects which spell you cast<br>
+                        3. The assigned keyboard key is sent to your computer<br>
+                        4. Works in both <strong>Mouse</strong> and <strong>Keyboard</strong> HID modes!<br>
+                        <br>
+                        💡 <strong>Example:</strong> Map "Lumos" to key "F" → Cast Lumos → "F" key pressed<br>
+                        Perfect for gaming hotkeys, productivity shortcuts, etc!
+                    </div>
                     <h4 style="margin: 0 0 10px 0; color: #4CAF50;">Spell Mappings (Full Keyboard)</h4>
                     <input type="text" id="spell-filter" class="spell-mapping-search" placeholder="Filter spells..." oninput="filterSpellMappings()">
                     <div class="spell-mappings-container">
@@ -483,19 +493,31 @@ static const char index_html[] = R"rawliteral(
                         <div style="margin: 10px 0;">
                             <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
                                 <input type="checkbox" id="invert-mouse-y" style="width: 18px; height: 18px;">
-                                <span>Invert Y-Axis (wand up = cursor up)</span>
+                                <span>Invert Mouse Y-Axis</span>
                             </label>
-                            <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Checked = inverted (typical), Unchecked = natural</div>
+                            <div style="font-size: 0.8em; color: #888; margin-top: 5px;">
+                                📍 Only applies in <strong>Mouse</strong> mode<br>
+                                ⚠️ <strong>If cursor moves BACKWARDS:</strong><br>
+                                • UNCHECKED (default) = wand UP moves cursor UP (natural)<br>
+                                • CHECKED = wand UP moves cursor DOWN (inverted)<br>
+                                💡 Click "Reset Settings" below if checkbox doesn't work
+                            </div>
                         </div>
                         <div style="margin: 10px 0; border-top: 1px solid #444; padding-top: 10px;">
                             <label style="display: block; margin-bottom: 5px;">HID Mode:</label>
                             <select id="hid-mode" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
-                                <option value="0">Mouse</option>
-                                <option value="1">Keyboard</option>
-                                <option value="2">Gamepad</option>
-                                <option value="3">Disabled</option>
+                                <option value="0">Mouse - Wand controls cursor + spell keys</option>
+                                <option value="1">Keyboard - Spell keys only</option>
+                                <option value="2">Gamepad - Wand controls joystick + spell buttons</option>
+                                <option value="3">Disabled - No HID output</option>
                             </select>
-                            <div style="font-size: 0.8em; color: #888; margin-top: 5px;">Only one mode can be active at a time</div>
+                            <div style="font-size: 0.8em; color: #4CAF50; margin-top: 8px; padding: 8px; background: rgba(76, 175, 80, 0.1); border-left: 3px solid #4CAF50; border-radius: 4px;">
+                                <strong>ℹ️ Mixed Mode Tip:</strong><br>
+                                • <strong>Mouse mode:</strong> Wand movement controls cursor AND detected spells send keyboard keys!<br>
+                                • <strong>Keyboard mode:</strong> Only spell detection sends keys (no mouse movement)<br>
+                                • <strong>Gamepad mode:</strong> Wand controls joystick AND spells trigger gamepad buttons<br>
+                                • This lets you aim with the wand while casting spells as hotkeys!
+                            </div>
                         </div>
                         <div style="margin: 10px 0; border-top: 1px solid #444; padding-top: 10px;">
                             <label style="display: block; margin-bottom: 5px;">Gamepad Sensitivity:</label>
@@ -516,6 +538,10 @@ static const char index_html[] = R"rawliteral(
                                 <input type="checkbox" id="invert-gamepad-y" style="width: 18px; height: 18px;">
                                 <span>Invert Gamepad Y-Axis</span>
                             </label>
+                            <div style="font-size: 0.8em; color: #888; margin-top: 5px;">
+                                🎮 Only applies in <strong>Gamepad</strong> mode<br>
+                                ⚠️ Toggle if wand movement feels backwards in-game
+                            </div>
                         </div>
                     </div>
                     <div style="background: #222; padding: 10px; border-radius: 5px; margin-top: 10px;">
@@ -1611,13 +1637,19 @@ static const char index_html[] = R"rawliteral(
         
         // Load and save settings with spell mappings
         function saveSettings() {
+            const invertMouseY = document.getElementById('invert-mouse-y').checked;
+            console.log('💾 Saving settings - invert_mouse_y checkbox state:', invertMouseY);
+            
+            const invertGamepadY = document.getElementById('invert-gamepad-y').checked;
+            console.log('💾 Saving settings - gamepad_invert_y checkbox state:', invertGamepadY);
+            
             const settings = {
                 mouse_sensitivity: parseFloat(document.getElementById('mouse-sensitivity').value),
-                invert_mouse_y: document.getElementById('invert-mouse-y').checked,
+                invert_mouse_y: invertMouseY,
                 hid_mode: parseInt(document.getElementById('hid-mode').value),
                 gamepad_sensitivity: parseFloat(document.getElementById('gamepad-sensitivity').value),
                 gamepad_deadzone: parseFloat(document.getElementById('gamepad-deadzone').value),
-                gamepad_invert_y: document.getElementById('invert-gamepad-y').checked,
+                gamepad_invert_y: invertGamepadY,
                 ha_mqtt_enabled: document.getElementById('ha-mqtt-enabled').checked,
                 mqtt_broker: document.getElementById('mqtt-broker').value,
                 mqtt_username: document.getElementById('mqtt-username').value,
@@ -1629,7 +1661,11 @@ static const char index_html[] = R"rawliteral(
             // Collect all spell keycode mappings
             for (let i = 0; i < SPELL_NAMES.length; i++) {
                 const select = document.getElementById(`spell_${i}`);
-                settings.spells.push(parseInt(select.value));
+                const keycode = parseInt(select.value);
+                settings.spells.push(keycode);
+                if (keycode !== 0) {
+                    console.log(`Spell[${i}] '${SPELL_NAMES[i]}': keycode=${keycode} (0x${keycode.toString(16).toUpperCase()})`);
+                }
             }
 
             // Collect all spell gamepad button mappings
@@ -1659,15 +1695,23 @@ static const char index_html[] = R"rawliteral(
                 .then(response => response.json())
                 .then(data => {
                     console.log('Settings loaded:', data);
+                    console.log('🔍 Received invert_mouse_y from backend:', data.invert_mouse_y);
+                    console.log('🔍 Received gamepad_invert_y from backend:', data.gamepad_invert_y);
+                    
                     document.getElementById('mouse-sensitivity').value = data.mouse_sensitivity || 1.0;
                     document.getElementById('sens-value').textContent = (data.mouse_sensitivity || 1.0).toFixed(1) + 'x';
-                    document.getElementById('invert-mouse-y').checked = data.invert_mouse_y !== false;
+                    document.getElementById('invert-mouse-y').checked = (data.invert_mouse_y === true);
+                    
+                    console.log('✅ Set invert-mouse-y checkbox to:', document.getElementById('invert-mouse-y').checked);
+                    
                     document.getElementById('hid-mode').value = (data.hid_mode !== undefined) ? data.hid_mode : 0;
                     document.getElementById('gamepad-sensitivity').value = data.gamepad_sensitivity || 1.0;
                     document.getElementById('gpad-sens-value').textContent = (data.gamepad_sensitivity || 1.0).toFixed(1) + 'x';
                     document.getElementById('gamepad-deadzone').value = (data.gamepad_deadzone !== undefined) ? data.gamepad_deadzone : 0.05;
                     document.getElementById('gpad-deadzone-value').textContent = ((data.gamepad_deadzone !== undefined) ? data.gamepad_deadzone : 0.05).toFixed(2);
-                    document.getElementById('invert-gamepad-y').checked = data.gamepad_invert_y !== false;
+                    document.getElementById('invert-gamepad-y').checked = (data.gamepad_invert_y === true);
+                    
+                    console.log('✅ Set invert-gamepad-y checkbox to:', document.getElementById('invert-gamepad-y').checked);
                     document.getElementById('ha-mqtt-enabled').checked = data.ha_mqtt_enabled !== false;
                     document.getElementById('mqtt-broker').value = data.mqtt_broker || '';
                     document.getElementById('mqtt-username').value = data.mqtt_username || '';
@@ -1675,12 +1719,18 @@ static const char index_html[] = R"rawliteral(
                     
                     // Load spell keycodes
                     if (data.spells && data.spells.length === SPELL_NAMES.length) {
+                        let loaded_count = 0;
                         for (let i = 0; i < data.spells.length; i++) {
                             const select = document.getElementById(`spell_${i}`);
                             if (select) {
                                 select.value = data.spells[i];
+                                if (data.spells[i] !== 0) {
+                                    loaded_count++;
+                                    console.log(`Loading spell[${i}] '${SPELL_NAMES[i]}': keycode=${data.spells[i]} (0x${data.spells[i].toString(16).toUpperCase().padStart(2, '0')})`);
+                                }
                             }
                         }
+                        console.log(`✓ Loaded ${loaded_count} spell-to-key mappings`);
                     }
                     if (data.gamepad_spells && data.gamepad_spells.length === SPELL_NAMES.length) {
                         for (let i = 0; i < data.gamepad_spells.length; i++) {
@@ -1704,23 +1754,11 @@ static const char index_html[] = R"rawliteral(
                     .then(response => response.json())
                     .then(data => {
                         console.log('Settings reset:', data);
-                        // Reset all spell mappings to 0 (disabled)
-                        for (let i = 0; i < SPELL_NAMES.length; i++) {
-                            const select = document.getElementById(`spell_${i}`);
-                            if (select) select.value = 0;
-                        }
-                        for (let i = 0; i < SPELL_NAMES.length; i++) {
-                            const select = document.getElementById(`gpad_spell_${i}`);
-                            if (select) select.value = 0;
-                        }
-                        document.getElementById('mouse-sensitivity').value = 1.0;
-                        document.getElementById('sens-value').textContent = '1.0x';
-                        document.getElementById('gamepad-sensitivity').value = 1.0;
-                        document.getElementById('gpad-sens-value').textContent = '1.0x';
-                        document.getElementById('gamepad-deadzone').value = 0.05;
-                        document.getElementById('gpad-deadzone-value').textContent = '0.05';
-                        document.getElementById('invert-gamepad-y').checked = true;
-                        showToast('Settings reset to defaults!', 'success');
+                        showToast('Settings reset to defaults! Reloading...', 'success');
+                        // Reload settings from backend to ensure UI is synced
+                        setTimeout(() => {
+                            loadSettings();
+                        }, 500);
                     })
                     .catch(error => {
                         showToast('Failed to reset settings', 'error');
@@ -3012,14 +3050,27 @@ esp_err_t WebServer::settings_get_handler(httpd_req_t *req)
     int offset = 0;
     size_t buffer_size = 4096;
 
+    float mouse_sens = usbHID.getMouseSensitivity();
+    bool mouse_invert = usbHID.getInvertMouseY();
+    HIDMode hid_mode = usbHID.getHidMode();
+    float gamepad_sens = usbHID.getGamepadSensitivity();
+    float gamepad_deadzone = usbHID.getGamepadDeadzone();
+    bool gamepad_invert = usbHID.getGamepadInvertY();
+
+    ESP_LOGI(TAG, "📤 Sending settings to UI:");
+    ESP_LOGI(TAG, "   mouse_sensitivity=%.2f, invert_mouse_y=%s", mouse_sens, mouse_invert ? "true" : "false");
+    ESP_LOGI(TAG, "   hid_mode=%u", static_cast<unsigned>(hid_mode));
+    ESP_LOGI(TAG, "   gamepad_sensitivity=%.2f, gamepad_deadzone=%.2f, gamepad_invert_y=%s",
+             gamepad_sens, gamepad_deadzone, gamepad_invert ? "true" : "false");
+
     offset += snprintf(buffer + offset, buffer_size - offset,
                        "{\"mouse_sensitivity\": %.2f, \"invert_mouse_y\": %s, \"hid_mode\": %u, \"gamepad_sensitivity\": %.2f, \"gamepad_deadzone\": %.2f, \"gamepad_invert_y\": %s, \"spells\": [",
-                       usbHID.getMouseSensitivity(),
-                       usbHID.getInvertMouseY() ? "true" : "false",
-                       static_cast<unsigned>(usbHID.getHidMode()),
-                       usbHID.getGamepadSensitivity(),
-                       usbHID.getGamepadDeadzone(),
-                       usbHID.getGamepadInvertY() ? "true" : "false");
+                       mouse_sens,
+                       mouse_invert ? "true" : "false",
+                       static_cast<unsigned>(hid_mode),
+                       gamepad_sens,
+                       gamepad_deadzone,
+                       gamepad_invert ? "true" : "false");
 
     const uint8_t *spell_keycodes = usbHID.getSpellKeycodes();
     for (int i = 0; i < 73; i++)
@@ -3231,7 +3282,7 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     char *mouse_ptr = strstr(buffer, "\"mouse_sensitivity\"");
     if (mouse_ptr)
     {
-        sscanf(mouse_ptr, "\"mouse_sensitivity\": %f", &mouse_sens);
+        sscanf(mouse_ptr, "\"mouse_sensitivity\" : %f", &mouse_sens);
         usbHID.setMouseSensitivityValue(mouse_sens);
     }
 
@@ -3239,8 +3290,23 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     char *invert_ptr = strstr(buffer, "\"invert_mouse_y\"");
     if (invert_ptr)
     {
-        bool invert = (strstr(invert_ptr, "true") != NULL);
-        usbHID.setInvertMouseY(invert);
+        // Find the colon after the key, then check the value
+        char *value_ptr = strchr(invert_ptr, ':');
+        if (value_ptr)
+        {
+            value_ptr++; // Skip colon
+            while (*value_ptr == ' ' || *value_ptr == '\t')
+                value_ptr++; // Skip whitespace
+            bool invert = (strncmp(value_ptr, "true", 4) == 0);
+            ESP_LOGI(TAG, "🔍 Parsing invert_mouse_y: JSON substring='%.50s...', parsed_value=%s",
+                     invert_ptr, invert ? "true" : "false");
+            usbHID.setInvertMouseY(invert);
+            ESP_LOGI(TAG, "✅ Called setInvertMouseY(%s)", invert ? "true" : "false");
+        }
+    }
+    else
+    {
+        ESP_LOGW(TAG, "⚠️ invert_mouse_y not found in JSON!");
     }
 
     // Parse HID mode
@@ -3248,7 +3314,7 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     if (hid_mode_ptr)
     {
         int hid_mode = HID_MODE_MOUSE;
-        sscanf(hid_mode_ptr, "\"hid_mode\": %d", &hid_mode);
+        sscanf(hid_mode_ptr, "\"hid_mode\" : %d", &hid_mode);
         usbHID.setHidMode(static_cast<HIDMode>(hid_mode));
     }
 
@@ -3257,7 +3323,8 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     if (gpad_sens_ptr)
     {
         float gpad_sens = 1.0f;
-        sscanf(gpad_sens_ptr, "\"gamepad_sensitivity\": %f", &gpad_sens);
+        sscanf(gpad_sens_ptr, "\"gamepad_sensitivity\" : %f", &gpad_sens);
+        ESP_LOGI(TAG, "📝 Parsed gamepad_sensitivity: %.2f", gpad_sens);
         usbHID.setGamepadSensitivityValue(gpad_sens);
     }
 
@@ -3266,7 +3333,8 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     if (gpad_deadzone_ptr)
     {
         float gpad_deadzone = 0.05f;
-        sscanf(gpad_deadzone_ptr, "\"gamepad_deadzone\": %f", &gpad_deadzone);
+        sscanf(gpad_deadzone_ptr, "\"gamepad_deadzone\" : %f", &gpad_deadzone);
+        ESP_LOGI(TAG, "📝 Parsed gamepad_deadzone: %.2f", gpad_deadzone);
         usbHID.setGamepadDeadzoneValue(gpad_deadzone);
     }
 
@@ -3274,15 +3342,37 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     char *gpad_invert_ptr = strstr(buffer, "\"gamepad_invert_y\"");
     if (gpad_invert_ptr)
     {
-        bool invert = (strstr(gpad_invert_ptr, "true") != NULL);
+        // Find the colon after the key, then check the value
+        char *value_ptr = strchr(gpad_invert_ptr, ':');
+        bool invert = false;
+        if (value_ptr)
+        {
+            value_ptr++; // Skip colon
+            while (*value_ptr == ' ' || *value_ptr == '\t')
+                value_ptr++; // Skip whitespace
+            invert = (strncmp(value_ptr, "true", 4) == 0);
+
+            ESP_LOGI(TAG, "🔍 Parsing gamepad_invert_y: JSON substring='%.50s...', parsed_value=%s",
+                     gpad_invert_ptr, invert ? "true" : "false");
+        }
         usbHID.setGamepadInvertY(invert);
+        ESP_LOGI(TAG, "✅ Called setGamepadInvertY(%s)", invert ? "true" : "false");
     }
 
     // Parse HA MQTT enabled
     char *ha_mqtt_ptr = strstr(buffer, "\"ha_mqtt_enabled\"");
     if (ha_mqtt_ptr)
     {
-        bool enabled = (strstr(ha_mqtt_ptr, "true") != NULL);
+        // Find the colon after the key, then check the value
+        char *value_ptr = strchr(ha_mqtt_ptr, ':');
+        bool enabled = false;
+        if (value_ptr)
+        {
+            value_ptr++; // Skip colon
+            while (*value_ptr == ' ' || *value_ptr == '\t')
+                value_ptr++; // Skip whitespace
+            enabled = (strncmp(value_ptr, "true", 4) == 0);
+        }
         nvs_handle_t nvs_handle;
         esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
         if (err == ESP_OK)
@@ -3411,6 +3501,8 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
                     int matched = sscanf(parse_ptr, "%d", &keycode);
                     if (matched == 1)
                     {
+                        ESP_LOGI(TAG, "Setting spell[%d]='%s' to keycode=0x%02X (%d)",
+                                 spell_idx, SPELL_NAMES[spell_idx], keycode, keycode);
                         usbHID.setSpellKeycode(SPELL_NAMES[spell_idx], (uint8_t)keycode);
                         spell_idx++;
                         // Skip to next comma or bracket
@@ -3493,7 +3585,16 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     char *ha_mqtt_ptr = strstr(buffer, "\"ha_mqtt_enabled\"");
     if (ha_mqtt_ptr)
     {
-        bool enabled = (strstr(ha_mqtt_ptr, "true") != NULL);
+        // Find the colon after the key, then check the value
+        char *value_ptr = strchr(ha_mqtt_ptr, ':');
+        bool enabled = false;
+        if (value_ptr)
+        {
+            value_ptr++; // Skip colon
+            while (*value_ptr == ' ' || *value_ptr == '\t')
+                value_ptr++; // Skip whitespace
+            enabled = (strncmp(value_ptr, "true", 4) == 0);
+        }
         nvs_handle_t nvs_handle;
         esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
         if (err == ESP_OK)
@@ -3973,7 +4074,20 @@ esp_err_t WebServer::hotspot_settings_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "Received hotspot settings: %s", buffer);
 
     // Parse settings
-    bool enabled = (strstr(buffer, "\"enabled\":true") != NULL);
+    char *enabled_ptr = strstr(buffer, "\"enabled\"");
+    bool enabled = false;
+    if (enabled_ptr)
+    {
+        char *value_ptr = strchr(enabled_ptr, ':');
+        if (value_ptr)
+        {
+            value_ptr++;
+            while (*value_ptr == ' ' || *value_ptr == '\t')
+                value_ptr++;
+            enabled = (strncmp(value_ptr, "true", 4) == 0);
+        }
+    }
+
     char ssid[32] = {0};
     char password[64] = {0};
     int channel = 1;
@@ -4023,7 +4137,7 @@ esp_err_t WebServer::hotspot_settings_handler(httpd_req_t *req)
     char *channel_ptr = strstr(buffer, "\"channel\":");
     if (channel_ptr)
     {
-        sscanf(channel_ptr, "\"channel\":%d", &channel);
+        sscanf(channel_ptr, "\"channel\" : %d", &channel);
     }
 
     // Save hotspot settings to NVS
@@ -4147,9 +4261,24 @@ esp_err_t WebServer::system_wifi_mode_handler(httpd_req_t *req)
     // Parse JSON to extract mode
     // Expected: {"mode":"client"} or {"mode":"ap"}
     bool force_ap = false;
-    if (strstr(buf, "\"ap\"") != nullptr)
+    char *mode_ptr = strstr(buf, "\"mode\"");
+    if (mode_ptr)
     {
-        force_ap = true;
+        char *value_ptr = strchr(mode_ptr, ':');
+        if (value_ptr)
+        {
+            value_ptr++;
+            while (*value_ptr == ' ' || *value_ptr == '\t')
+                value_ptr++;
+            if (*value_ptr == '\"')
+            {
+                value_ptr++;
+                if (strncmp(value_ptr, "ap", 2) == 0)
+                {
+                    force_ap = true;
+                }
+            }
+        }
     }
 
     ESP_LOGI(TAG, "Setting force_ap_mode to %d", force_ap ? 1 : 0);

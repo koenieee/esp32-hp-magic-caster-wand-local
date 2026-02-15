@@ -76,32 +76,57 @@ static const uint8_t hid_report_descriptor[] = {
     0x81, 0x00, //   Input (Data, Array) - Key array
     0xC0,       // End Collection (Application)
 
-    // Gamepad Report (Report ID 3)
-    0x05, 0x01,       // Usage Page (Generic Desktop)
-    0x09, 0x05,       // Usage (Gamepad)
-    0xA1, 0x01,       // Collection (Application)
-    0x85, 0x03,       //   Report ID (3)
-    0x05, 0x01,       //   Usage Page (Generic Desktop)
-    0x09, 0x30,       //   Usage (X)
-    0x09, 0x31,       //   Usage (Y)
-    0x09, 0x33,       //   Usage (Rx)
-    0x09, 0x34,       //   Usage (Ry)
-    0x15, 0x81,       //   Logical Minimum (-127)
-    0x25, 0x7F,       //   Logical Maximum (127)
-    0x75, 0x08,       //   Report Size (8)
-    0x95, 0x04,       //   Report Count (4)
-    0x81, 0x02,       //   Input (Data, Variable, Absolute)
-    0x05, 0x09,       //   Usage Page (Buttons)
-    0x19, 0x01,       //   Usage Minimum (Button 1)
-    0x29, 0x0A,       //   Usage Maximum (Button 10)
-    0x15, 0x00,       //   Logical Minimum (0)
-    0x25, 0x01,       //   Logical Maximum (1)
-    0x75, 0x01,       //   Report Size (1)
-    0x95, 0x0A,       //   Report Count (10)
-    0x81, 0x02,       //   Input (Data, Variable, Absolute)
-    0x75, 0x01,       //   Report Size (1)
-    0x95, 0x06,       //   Report Count (6)
-    0x81, 0x01,       //   Input (Constant) - padding
+    // Gamepad Report (Report ID 3) - Full Xbox-Compatible Controller
+    // Compatible with games like Hogwarts Legacy that require complete gamepad support
+    0x05, 0x01, // Usage Page (Generic Desktop)
+    0x09, 0x05, // Usage (Gamepad)
+    0xA1, 0x01, // Collection (Application)
+    0x85, 0x03, //   Report ID (3)
+
+    // Left Stick (X, Y)
+    0x05, 0x01, //   Usage Page (Generic Desktop)
+    0x09, 0x30, //   Usage (X)
+    0x09, 0x31, //   Usage (Y)
+    0x15, 0x81, //   Logical Minimum (-127)
+    0x25, 0x7F, //   Logical Maximum (127)
+    0x75, 0x08, //   Report Size (8)
+    0x95, 0x02, //   Report Count (2)
+    0x81, 0x02, //   Input (Data, Variable, Absolute)
+
+    // Right Stick (Rx, Ry)
+    0x09, 0x33, //   Usage (Rx)
+    0x09, 0x34, //   Usage (Ry)
+    0x15, 0x81, //   Logical Minimum (-127)
+    0x25, 0x7F, //   Logical Maximum (127)
+    0x75, 0x08, //   Report Size (8)
+    0x95, 0x02, //   Report Count (2)
+    0x81, 0x02, //   Input (Data, Variable, Absolute)
+
+    // Triggers (LT, RT) - Z axis
+    0x09, 0x32, //   Usage (Z) - Left Trigger
+    0x09, 0x35, //   Usage (Rz) - Right Trigger
+    0x15, 0x00, //   Logical Minimum (0)
+    0x25, 0xFF, //   Logical Maximum (255)
+    0x75, 0x08, //   Report Size (8)
+    0x95, 0x02, //   Report Count (2)
+    0x81, 0x02, //   Input (Data, Variable, Absolute)
+
+    // Buttons (14 buttons: A, B, X, Y, LB, RB, Back, Start, LS, RS, + 4 extra)
+    0x05, 0x09, //   Usage Page (Buttons)
+    0x19, 0x01, //   Usage Minimum (Button 1)
+    0x29, 0x0E, //   Usage Maximum (Button 14)
+    0x15, 0x00, //   Logical Minimum (0)
+    0x25, 0x01, //   Logical Maximum (1)
+    0x75, 0x01, //   Report Size (1)
+    0x95, 0x0E, //   Report Count (14)
+    0x81, 0x02, //   Input (Data, Variable, Absolute)
+
+    // Padding (2 bits to make 16 bits = 2 bytes)
+    0x75, 0x01, //   Report Size (1)
+    0x95, 0x02, //   Report Count (2)
+    0x81, 0x01, //   Input (Constant)
+
+    // D-Pad (Hat Switch)
     0x05, 0x01,       //   Usage Page (Generic Desktop)
     0x09, 0x39,       //   Usage (Hat switch)
     0x15, 0x00,       //   Logical Minimum (0)
@@ -112,10 +137,13 @@ static const uint8_t hid_report_descriptor[] = {
     0x75, 0x04,       //   Report Size (4)
     0x95, 0x01,       //   Report Count (1)
     0x81, 0x42,       //   Input (Data, Variable, Absolute, Null State)
-    0x75, 0x04,       //   Report Size (4)
-    0x95, 0x01,       //   Report Count (1)
-    0x81, 0x01,       //   Input (Constant) - padding
-    0xC0              // End Collection (Application)
+
+    // Padding (4 bits to complete the byte)
+    0x75, 0x04, //   Report Size (4)
+    0x95, 0x01, //   Report Count (1)
+    0x81, 0x01, //   Input (Constant)
+
+    0xC0 // End Collection (Application)
 };
 
 // USB Descriptors for Composite HID + CDC
@@ -331,13 +359,13 @@ USBHIDManager::USBHIDManager()
 {
     // Initialize default settings
     settings.mouse_sensitivity = 1.0f;
-    settings.invert_mouse_y = true;   // Default: inverted (typical UI behavior)
+    settings.invert_mouse_y = false;  // Default: natural (wand UP = cursor UP, since IMU gives negative for up)
     settings.mouse_enabled = true;    // Default: enabled
     settings.keyboard_enabled = true; // Default: enabled
     settings.hid_mode = HID_MODE_MOUSE;
     settings.gamepad_sensitivity = 1.0f;
     settings.gamepad_deadzone = 0.05f;
-    settings.gamepad_invert_y = true;
+    settings.gamepad_invert_y = false; // Default: natural (wand UP = stick UP)
     // Initialize all spell keycodes to 0 (disabled)
     memset(settings.spell_keycodes, 0, sizeof(settings.spell_keycodes));
     memset(settings.spell_gamepad_buttons, 0, sizeof(settings.spell_gamepad_buttons));
@@ -387,6 +415,16 @@ bool USBHIDManager::begin()
 #endif
 
     initialized = true;
+
+    // Log final loaded settings for verification
+    ESP_LOGI(TAG, "📋 Final settings after initialization:");
+    ESP_LOGI(TAG, "   Mouse: sensitivity=%.2f, invert_y=%s",
+             settings.mouse_sensitivity, settings.invert_mouse_y ? "true" : "false");
+    ESP_LOGI(TAG, "   Gamepad: sensitivity=%.2f, deadzone=%.2f, invert_y=%s",
+             settings.gamepad_sensitivity, settings.gamepad_deadzone, settings.gamepad_invert_y ? "true" : "false");
+    ESP_LOGI(TAG, "   HID mode=%u, mouse_enabled=%d, keyboard_enabled=%d",
+             settings.hid_mode, settings.mouse_enabled, settings.keyboard_enabled);
+
     ESP_LOGI(TAG, "USB HID initialized successfully");
     return true;
 #else
@@ -460,11 +498,8 @@ void USBHIDManager::updateGamepadFromGesture(float delta_x, float delta_y)
 
     float scale = settings.gamepad_sensitivity;
 
-    // Apply invert Y-axis setting
-    if (settings.gamepad_invert_y)
-    {
-        delta_y = -delta_y;
-    }
+    // Note: Inversion is already applied in ble_client.cpp before calling this function
+    // Do NOT apply inversion here again to avoid double-inversion
 
     int16_t temp_x = (int16_t)(delta_x * scale);
     int16_t temp_y = (int16_t)(delta_y * scale);
@@ -484,19 +519,19 @@ void USBHIDManager::updateGamepadFromGesture(float delta_x, float delta_y)
     if (gamepad_ly > -deadzone && gamepad_ly < deadzone)
         gamepad_ly = 0;
 
-    // Use left stick only; right stick centered, hat neutral.
-    sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, gamepad_buttons, 0x0F);
+    // Use left stick only; right stick centered, triggers off, hat neutral.
+    sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, 0, 0, gamepad_buttons, 0x0F);
 #endif
 }
 
 void USBHIDManager::setGamepadButtons(uint16_t buttons)
 {
-    gamepad_buttons = buttons & 0x03FF; // 10 buttons max
+    gamepad_buttons = buttons & 0x3FFF; // 14 buttons max
 
 #if USE_USB_HID_DEVICE
     if (initialized && getHidMode() == HID_MODE_GAMEPAD)
     {
-        sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, gamepad_buttons, 0x0F);
+        sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, 0, 0, gamepad_buttons, 0x0F);
     }
 #endif
 }
@@ -526,8 +561,13 @@ void USBHIDManager::setMouseSensitivity(float sensitivity)
 void USBHIDManager::sendKeyPress(uint8_t keycode, uint8_t modifiers)
 {
 #if USE_USB_HID_DEVICE
-    if (!initialized || !keyboard_enabled || getHidMode() != HID_MODE_KEYBOARD)
+    // Allow keyboard input in both MOUSE and KEYBOARD modes (for spell hotkeys + mouse movement)
+    if (!initialized || !keyboard_enabled || (getHidMode() != HID_MODE_KEYBOARD && getHidMode() != HID_MODE_MOUSE))
+    {
+        ESP_LOGW(TAG, "⚠️ sendKeyPress blocked: init=%d, kbd_en=%d, mode=%d",
+                 initialized, keyboard_enabled, getHidMode());
         return;
+    }
 
     sendKeyboardReport(modifiers, keycode);
 #endif
@@ -536,7 +576,8 @@ void USBHIDManager::sendKeyPress(uint8_t keycode, uint8_t modifiers)
 void USBHIDManager::sendKeyRelease()
 {
 #if USE_USB_HID_DEVICE
-    if (!initialized || !keyboard_enabled || getHidMode() != HID_MODE_KEYBOARD)
+    // Allow keyboard input in both MOUSE and KEYBOARD modes (for spell hotkeys + mouse movement)
+    if (!initialized || !keyboard_enabled || (getHidMode() != HID_MODE_KEYBOARD && getHidMode() != HID_MODE_MOUSE))
         return;
 
     sendKeyboardReport(0, 0);
@@ -627,7 +668,7 @@ void USBHIDManager::setHidMode(HIDMode mode)
     {
     case HID_MODE_MOUSE:
         mouse_enabled = true;
-        keyboard_enabled = false;
+        keyboard_enabled = true; // Enable keyboard for spell hotkeys in mouse mode
         break;
     case HID_MODE_KEYBOARD:
         mouse_enabled = false;
@@ -645,7 +686,7 @@ void USBHIDManager::setHidMode(HIDMode mode)
     }
     settings.mouse_enabled = mouse_enabled;
     settings.keyboard_enabled = keyboard_enabled;
-    ESP_LOGI(TAG, "HID mode set to %u", settings.hid_mode);
+    ESP_LOGI(TAG, "HID mode set to %u (mouse=%d, keyboard=%d)", settings.hid_mode, mouse_enabled, keyboard_enabled);
 }
 
 void USBHIDManager::sendMouseReport(int8_t x, int8_t y, int8_t wheel, uint8_t buttons)
@@ -664,20 +705,24 @@ void USBHIDManager::sendMouseReport(int8_t x, int8_t y, int8_t wheel, uint8_t bu
 #endif
 }
 
-void USBHIDManager::sendGamepadReport(int8_t lx, int8_t ly, int8_t rx, int8_t ry, uint16_t buttons, uint8_t hat)
+void USBHIDManager::sendGamepadReport(int8_t lx, int8_t ly, int8_t rx, int8_t ry, uint8_t lt, uint8_t rt, uint16_t buttons, uint8_t hat)
 {
 #if USE_USB_HID_DEVICE
     if (!tud_hid_ready())
         return;
 
-    uint8_t report[7];
-    report[0] = (uint8_t)lx;
-    report[1] = (uint8_t)ly;
-    report[2] = (uint8_t)rx;
-    report[3] = (uint8_t)ry;
-    report[4] = (uint8_t)(buttons & 0xFF);
-    report[5] = (uint8_t)((buttons >> 8) & 0x03);
-    report[6] = (uint8_t)(hat & 0x0F);
+    // Full Xbox-compatible gamepad: 9 bytes total (per HID descriptor)
+    // Left stick (2), right stick (2), triggers (2), buttons (2), hat (1)
+    uint8_t report[9];
+    report[0] = (uint8_t)lx;                      // Left stick X
+    report[1] = (uint8_t)ly;                      // Left stick Y
+    report[2] = (uint8_t)rx;                      // Right stick X
+    report[3] = (uint8_t)ry;                      // Right stick Y
+    report[4] = lt;                               // Left trigger (Z axis)
+    report[5] = rt;                               // Right trigger (Rz axis)
+    report[6] = (uint8_t)(buttons & 0xFF);        // Buttons 1-8
+    report[7] = (uint8_t)((buttons >> 8) & 0x3F); // Buttons 9-14 (6 bits) + 2 bits padding
+    report[8] = (uint8_t)(hat & 0x0F);            // D-pad hat (4 bits) + 4 bits padding
 
     tud_hid_report(3, report, sizeof(report)); // Report ID 3 = Gamepad
 #endif
@@ -796,6 +841,7 @@ uint8_t USBHIDManager::getSpellKeycode(const char *spell_name) const
 
 bool USBHIDManager::loadSettings()
 {
+    ESP_LOGI(TAG, "📂 Loading settings from NVS...");
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("usb_hid", NVS_READONLY, &nvs_handle);
     if (err != ESP_OK)
@@ -810,10 +856,12 @@ bool USBHIDManager::loadSettings()
     if (err == ESP_OK)
     {
         settings.mouse_sensitivity = (float)sens_10x / 10.0f;
+        ESP_LOGI(TAG, "✓ Loaded mouse_sensitivity from NVS: %.2f (raw: %d)", settings.mouse_sensitivity, sens_10x);
     }
     else
     {
         settings.mouse_sensitivity = 1.0f;
+        ESP_LOGI(TAG, "⚠ Mouse sensitivity not found in NVS, using default: 1.0");
     }
 
     // Load gamepad sensitivity (stored as uint8_t: value * 10)
@@ -822,10 +870,12 @@ bool USBHIDManager::loadSettings()
     if (err == ESP_OK)
     {
         settings.gamepad_sensitivity = (float)gpad_sens_10x / 10.0f;
+        ESP_LOGI(TAG, "✓ Loaded gamepad_sensitivity from NVS: %.2f (raw: %d)", settings.gamepad_sensitivity, gpad_sens_10x);
     }
     else
     {
         settings.gamepad_sensitivity = 1.0f;
+        ESP_LOGI(TAG, "⚠ Gamepad sensitivity not found in NVS, using default: 1.0");
     }
 
     // Load gamepad deadzone (stored as uint8_t: value * 100)
@@ -834,21 +884,46 @@ bool USBHIDManager::loadSettings()
     if (err == ESP_OK)
     {
         settings.gamepad_deadzone = (float)gpad_deadzone_100 / 100.0f;
+        ESP_LOGI(TAG, "✓ Loaded gamepad_deadzone from NVS: %.2f (raw: %d)", settings.gamepad_deadzone, gpad_deadzone_100);
     }
     else
     {
         settings.gamepad_deadzone = 0.05f;
+        ESP_LOGI(TAG, "⚠ Gamepad deadzone not found in NVS, using default: 0.05");
     }
 
     // Load gamepad invert_y
-    uint8_t gpad_invert_y = 1; // Default: inverted
+    uint8_t gpad_invert_y = 0; // Default: natural (non-inverted)
     err = nvs_get_u8(nvs_handle, "gamepad_invert_y", &gpad_invert_y);
-    settings.gamepad_invert_y = (gpad_invert_y != 0);
+    if (err == ESP_OK)
+    {
+        settings.gamepad_invert_y = (gpad_invert_y != 0);
+        ESP_LOGI(TAG, "✓ Loaded gamepad_invert_y from NVS: %s", settings.gamepad_invert_y ? "true" : "false");
+    }
+    else
+    {
+        settings.gamepad_invert_y = false;
+        ESP_LOGI(TAG, "⚠ Gamepad invert_y not found in NVS, using default: false (natural)");
+    }
 
     // Load invert_mouse_y setting
-    uint8_t invert_y = 1; // Default: inverted (typical UI behavior)
+    uint8_t invert_y = 0; // Default: natural (non-inverted)
     err = nvs_get_u8(nvs_handle, "invert_mouse_y", &invert_y);
-    settings.invert_mouse_y = (invert_y != 0);
+    if (err == ESP_OK)
+    {
+        settings.invert_mouse_y = (invert_y != 0);
+        ESP_LOGI(TAG, "✓ Loaded invert_mouse_y from NVS: %s", settings.invert_mouse_y ? "true" : "false");
+    }
+    else
+    {
+        settings.invert_mouse_y = false;
+        ESP_LOGI(TAG, "⚠ Invert_mouse_y not found in NVS, using default: false (natural)");
+    }
+
+    // Log current state for debugging
+    ESP_LOGI(TAG, "🎯 Current axis inversion settings: mouse_y=%s, gamepad_y=%s",
+             settings.invert_mouse_y ? "INVERTED" : "NORMAL",
+             settings.gamepad_invert_y ? "INVERTED" : "NORMAL");
 
     // Load mouse_enabled
     uint8_t mouse_en = 1; // Default: enabled
@@ -885,30 +960,56 @@ bool USBHIDManager::loadSettings()
     setHidMode(static_cast<HIDMode>(hid_mode));
 
     // Load spell keycodes (73 spells)
+    ESP_LOGI(TAG, "Loading spell keycodes from NVS...");
+    int non_zero_count = 0;
     for (int i = 0; i < 73; i++)
     {
         char key[16];
         snprintf(key, sizeof(key), "spell%d", i);
+        uint8_t old_value = settings.spell_keycodes[i];
         nvs_get_u8(nvs_handle, key, &settings.spell_keycodes[i]);
-        // If not found, spell_keycodes[i] remains 0 (disabled)
+        if (settings.spell_keycodes[i] != 0)
+        {
+            non_zero_count++;
+            if (settings.spell_keycodes[i] != old_value)
+            {
+                extern const char *SPELL_NAMES[73];
+                ESP_LOGI(TAG, "  Spell[%d]='%s' loaded: 0x%02X (%d)",
+                         i, SPELL_NAMES[i], settings.spell_keycodes[i], settings.spell_keycodes[i]);
+            }
+        }
     }
-
-    // Load spell gamepad button mappings (73 spells)
-    for (int i = 0; i < 73; i++)
-    {
-        char key[20];
-        snprintf(key, sizeof(key), "gpad_spell%d", i);
-        nvs_get_u8(nvs_handle, key, &settings.spell_gamepad_buttons[i]);
-        // If not found, spell_gamepad_buttons[i] remains 0 (disabled)
-    }
+    ESP_LOGI(TAG, "Loaded %d non-zero spell mappings", non_zero_count);
 
     nvs_close(nvs_handle);
+
+    // Open gamepad namespace for gamepad spell mappings
+    err = nvs_open("gamepad", NVS_READONLY, &nvs_handle);
+    if (err == ESP_OK)
+    {
+        // Load spell gamepad button mappings (73 spells)
+        for (int i = 0; i < 73; i++)
+        {
+            char key[20];
+            snprintf(key, sizeof(key), "gpad_spell%d", i);
+            nvs_get_u8(nvs_handle, key, &settings.spell_gamepad_buttons[i]);
+            // If not found, spell_gamepad_buttons[i] remains 0 (disabled)
+        }
+        nvs_close(nvs_handle);
+    }
+
     ESP_LOGI(TAG, "USB HID settings loaded from NVS");
     return true;
 }
 
 bool USBHIDManager::saveSettings()
 {
+    ESP_LOGI(TAG, "🔍 saveSettings() called - checking current settings struct values:");
+    ESP_LOGI(TAG, "   gamepad_sensitivity=%.2f, gamepad_deadzone=%.2f, gamepad_invert_y=%s",
+             settings.gamepad_sensitivity, settings.gamepad_deadzone, settings.gamepad_invert_y ? "true" : "false");
+    ESP_LOGI(TAG, "   mouse_sensitivity=%.2f, invert_mouse_y=%s",
+             settings.mouse_sensitivity, settings.invert_mouse_y ? "true" : "false");
+
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("usb_hid", NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK)
@@ -921,19 +1022,9 @@ bool USBHIDManager::saveSettings()
     uint8_t sens_10x = (uint8_t)(settings.mouse_sensitivity * 10.0f);
     nvs_set_u8(nvs_handle, "mouse_sens_10x", sens_10x);
 
-    // Save gamepad sensitivity (as 10x value to store as uint8)
-    uint8_t gpad_sens_10x = (uint8_t)(settings.gamepad_sensitivity * 10.0f);
-    nvs_set_u8(nvs_handle, "gamepad_sens_10x", gpad_sens_10x);
-
-    // Save gamepad deadzone (as 100x value to store as uint8)
-    uint8_t gpad_deadzone_100 = (uint8_t)(settings.gamepad_deadzone * 100.0f);
-    nvs_set_u8(nvs_handle, "gamepad_deadzone_100", gpad_deadzone_100);
-
-    // Save gamepad invert_y
-    nvs_set_u8(nvs_handle, "gamepad_invert_y", settings.gamepad_invert_y ? 1 : 0);
-
     // Save invert_mouse_y setting
     nvs_set_u8(nvs_handle, "invert_mouse_y", settings.invert_mouse_y ? 1 : 0);
+    ESP_LOGI(TAG, "💾 Saved invert_mouse_y to NVS: %s", settings.invert_mouse_y ? "true" : "false");
 
     // Save mouse_enabled
     nvs_set_u8(nvs_handle, "mouse_enabled", settings.mouse_enabled ? 1 : 0);
@@ -945,14 +1036,58 @@ bool USBHIDManager::saveSettings()
     nvs_set_u8(nvs_handle, "hid_mode", settings.hid_mode);
 
     // Save spell keycodes (73 spells)
+    ESP_LOGI(TAG, "Saving spell keycodes to NVS...");
+    int saved_count = 0;
     for (int i = 0; i < 73; i++)
     {
         char key[16];
+        if (settings.spell_keycodes[i] != 0)
+        {
+            extern const char *SPELL_NAMES[73];
+            ESP_LOGI(TAG, "  Saving spell[%d]='%s' = 0x%02X (%d)",
+                     i, SPELL_NAMES[i], settings.spell_keycodes[i], settings.spell_keycodes[i]);
+            saved_count++;
+        }
         snprintf(key, sizeof(key), "spell%d", i);
         nvs_set_u8(nvs_handle, key, settings.spell_keycodes[i]);
     }
+    ESP_LOGI(TAG, "Saved %d non-zero spell mappings to NVS", saved_count);
+
+    // Commit usb_hid namespace
+    err = nvs_commit(nvs_handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to commit usb_hid NVS settings");
+        nvs_close(nvs_handle);
+        return false;
+    }
+    nvs_close(nvs_handle);
+    ESP_LOGI(TAG, "✅ Saved usb_hid settings to NVS");
+
+    // Open gamepad namespace for gamepad-specific settings
+    err = nvs_open("gamepad", NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to open NVS namespace 'gamepad'");
+        return false;
+    }
+
+    // Save gamepad sensitivity (as 10x value to store as uint8)
+    uint8_t gpad_sens_10x = (uint8_t)(settings.gamepad_sensitivity * 10.0f);
+    nvs_set_u8(nvs_handle, "gamepad_sens_10x", gpad_sens_10x);
+    ESP_LOGI(TAG, "💾 Saved gamepad_sensitivity to NVS: %.2f (raw: %d)", settings.gamepad_sensitivity, gpad_sens_10x);
+
+    // Save gamepad deadzone (as 100x value to store as uint8)
+    uint8_t gpad_deadzone_100 = (uint8_t)(settings.gamepad_deadzone * 100.0f);
+    nvs_set_u8(nvs_handle, "gamepad_deadzone_100", gpad_deadzone_100);
+    ESP_LOGI(TAG, "💾 Saved gamepad_deadzone to NVS: %.2f (raw: %d)", settings.gamepad_deadzone, gpad_deadzone_100);
+
+    // Save gamepad invert_y
+    nvs_set_u8(nvs_handle, "gamepad_invert_y", settings.gamepad_invert_y ? 1 : 0);
+    ESP_LOGI(TAG, "💾 Saved gamepad_invert_y to NVS: %s", settings.gamepad_invert_y ? "true" : "false");
 
     // Save spell gamepad button mappings (73 spells)
+    ESP_LOGI(TAG, "Saving gamepad spell button mappings to NVS...");
     for (int i = 0; i < 73; i++)
     {
         char key[20];
@@ -960,16 +1095,28 @@ bool USBHIDManager::saveSettings()
         nvs_set_u8(nvs_handle, key, settings.spell_gamepad_buttons[i]);
     }
 
+    // Commit gamepad namespace
     err = nvs_commit(nvs_handle);
-    nvs_close(nvs_handle);
-
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "Failed to commit NVS settings");
+        ESP_LOGE(TAG, "Failed to commit gamepad NVS settings");
+        nvs_close(nvs_handle);
         return false;
     }
 
-    ESP_LOGI(TAG, "USB HID settings saved to NVS");
+    // Verify gamepad values were actually written
+    uint8_t verify_gpad_sens = 0;
+    uint8_t verify_gpad_deadzone = 0;
+    uint8_t verify_gpad_invert = 0;
+    nvs_get_u8(nvs_handle, "gamepad_sens_10x", &verify_gpad_sens);
+    nvs_get_u8(nvs_handle, "gamepad_deadzone_100", &verify_gpad_deadzone);
+    nvs_get_u8(nvs_handle, "gamepad_invert_y", &verify_gpad_invert);
+    ESP_LOGI(TAG, "✅ Verified gamepad NVS write: sens=%d (%.1fx), deadzone=%d (%.2f), invert=%d",
+             verify_gpad_sens, verify_gpad_sens / 10.0f, verify_gpad_deadzone, verify_gpad_deadzone / 100.0f, verify_gpad_invert);
+
+    nvs_close(nvs_handle);
+
+    ESP_LOGI(TAG, "✅ All USB HID settings saved to NVS");
     return true;
 }
 
@@ -977,11 +1124,15 @@ bool USBHIDManager::resetSettings()
 {
     // Reset to defaults
     settings.mouse_sensitivity = 1.0f;
-    settings.invert_mouse_y = true;   // Default: inverted (typical UI behavior)
+    settings.invert_mouse_y = false;  // Default: natural (wand UP = cursor UP)
     settings.mouse_enabled = true;    // Default: enabled
     settings.keyboard_enabled = true; // Default: enabled
     settings.hid_mode = HID_MODE_MOUSE;
+    settings.gamepad_sensitivity = 1.0f;
+    settings.gamepad_deadzone = 0.05f;
+    settings.gamepad_invert_y = false; // Default: natural (wand UP = stick UP)
     memset(settings.spell_keycodes, 0, sizeof(settings.spell_keycodes));
+    memset(settings.spell_gamepad_buttons, 0, sizeof(settings.spell_gamepad_buttons));
 
     mouse_sensitivity = 1.0f;
     setHidMode(HID_MODE_MOUSE);
@@ -1025,7 +1176,7 @@ void USBHIDManager::setGamepadSensitivityValue(float sensitivity)
         sensitivity = 5.0f;
 
     settings.gamepad_sensitivity = sensitivity;
-    ESP_LOGI(TAG, "Gamepad sensitivity set to %.2f", sensitivity);
+    ESP_LOGI(TAG, "🎮 Gamepad sensitivity set to %.2f (will be saved on settings save)", sensitivity);
 }
 
 void USBHIDManager::setGamepadDeadzoneValue(float deadzone)
@@ -1037,6 +1188,20 @@ void USBHIDManager::setGamepadDeadzoneValue(float deadzone)
 
     settings.gamepad_deadzone = deadzone;
     ESP_LOGI(TAG, "Gamepad dead zone set to %.2f", deadzone);
+}
+
+void USBHIDManager::setInvertMouseY(bool invert)
+{
+    settings.invert_mouse_y = invert;
+    ESP_LOGI(TAG, "🔄 Mouse Y-axis invert set to: %s (wand UP -> cursor %s)",
+             invert ? "true (INVERTED)" : "false (NORMAL)",
+             invert ? "DOWN" : "UP");
+}
+
+void USBHIDManager::setGamepadInvertY(bool invert)
+{
+    settings.gamepad_invert_y = invert;
+    ESP_LOGI(TAG, "🔄 Gamepad Y-axis invert set to: %s", invert ? "true (INVERTED)" : "false (NORMAL)");
 }
 
 void USBHIDManager::setSpellGamepadButton(const char *spell_name, uint8_t button)
@@ -1083,16 +1248,16 @@ void USBHIDManager::sendSpellGamepadForSpell(const char *spell_name)
         return;
 
     uint8_t button = getSpellGamepadButton(spell_name);
-    if (button == 0 || button > 10)
+    if (button == 0 || button > 14)
         return;
 
     uint16_t mask = (uint16_t)(1U << (button - 1));
     uint16_t previous = gamepad_buttons;
-    gamepad_buttons = (previous | mask) & 0x03FF;
-    sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, gamepad_buttons, 0x0F);
+    gamepad_buttons = (previous | mask) & 0x3FFF;
+    sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, 0, 0, gamepad_buttons, 0x0F);
     vTaskDelay(pdMS_TO_TICKS(50));
-    gamepad_buttons = previous & 0x03FF;
-    sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, gamepad_buttons, 0x0F);
+    gamepad_buttons = previous & 0x3FFF;
+    sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, 0, 0, gamepad_buttons, 0x0F);
 #endif
 }
 

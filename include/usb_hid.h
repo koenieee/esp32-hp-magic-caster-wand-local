@@ -48,7 +48,7 @@ public:
     void setMouseSensitivity(float sensitivity);
     void setGamepadSensitivityValue(float sensitivity);
     void setGamepadDeadzoneValue(float deadzone);
-    void setGamepadInvertY(bool invert) { settings.gamepad_invert_y = invert; }
+    void setGamepadInvertY(bool invert);
 
     // Keyboard functions (spell to key mapping)
     void sendKeyPress(uint8_t keycode, uint8_t modifiers = 0);
@@ -97,7 +97,7 @@ public:
     const uint8_t *getSpellKeycodes() const { return settings.spell_keycodes; }
     const uint8_t *getSpellGamepadButtons() const { return settings.spell_gamepad_buttons; }
     bool getInvertMouseY() const { return settings.invert_mouse_y; }
-    void setInvertMouseY(bool invert) { settings.invert_mouse_y = invert; }
+    void setInvertMouseY(bool invert);
 
 private:
     bool initialized;
@@ -120,6 +120,6 @@ private:
     // Helper functions
     void sendMouseReport(int8_t x, int8_t y, int8_t wheel, uint8_t buttons);
     void sendKeyboardReport(uint8_t modifiers, uint8_t keycode);
-    void sendGamepadReport(int8_t lx, int8_t ly, int8_t rx, int8_t ry, uint16_t buttons, uint8_t hat);
+    void sendGamepadReport(int8_t lx, int8_t ly, int8_t rx, int8_t ry, uint8_t lt, uint8_t rt, uint16_t buttons, uint8_t hat);
     uint8_t getKeycodeForSpell(const char *spell_name);
 };
