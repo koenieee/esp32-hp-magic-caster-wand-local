@@ -355,7 +355,10 @@ USBHIDManager::USBHIDManager()
       gamepad_lx(0),
       gamepad_ly(0),
       gamepad_rx(0),
-      gamepad_ry(0)
+      gamepad_ry(0),
+      smoothed_lx(0.0f),
+      smoothed_ly(0.0f),
+      smoothing_initialized(false)
 {
     // Initialize default settings
     settings.mouse_sensitivity = 1.0f;
@@ -520,6 +523,84 @@ void USBHIDManager::updateGamepadFromGesture(float delta_x, float delta_y)
         gamepad_ly = 0;
 
     // Use left stick only; right stick centered, triggers off, hat neutral.
+    sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, 0, 0, gamepad_buttons, 0x0F);
+#endif
+}
+
+void USBHIDManager::updateGamepadFromPosition(float pos_x, float pos_y)
+{
+#if USE_USB_HID_DEVICE
+    if (!initialized || in_spell_mode || getHidMode() != HID_MODE_GAMEPAD)
+        return;
+
+    // Position scaling: AHRS positions are typically in range ~[-300, +300]
+    // Scale to gamepad range [-127, +127] with sensitivity multiplier
+    // Base scaling factor: 127/300 ≈ 0.42, adjusted by sensitivity
+    constexpr float BASE_SCALE = 0.42f;
+    float scale = BASE_SCALE * settings.gamepad_sensitivity;
+
+    // Apply Y-axis inversion (do NOT rely on ble_client.cpp for position mode)
+    if (settings.gamepad_invert_y)
+    {
+        pos_y = -pos_y;
+    }
+
+    // Scale and clamp to stick range
+    int16_t temp_x = (int16_t)(pos_x * scale);
+    int16_t temp_y = (int16_t)(pos_y * scale);
+
+    int8_t stick_x = (temp_x > 127) ? 127 : (temp_x < -127) ? -127
+                                                            : (int8_t)temp_x;
+    int8_t stick_y = (temp_y > 127) ? 127 : (temp_y < -127) ? -127
+                                                            : (int8_t)temp_y;
+
+    // Exponential smoothing to reduce hand tremor jitter
+    // Alpha = 0.3: smooth but responsive (lower = smoother, higher = more responsive)
+    constexpr float SMOOTHING_ALPHA = 0.3f;
+
+    if (!smoothing_initialized)
+    {
+        // Initialize filter with first value
+        smoothed_lx = (float)stick_x;
+        smoothed_ly = (float)stick_y;
+        smoothing_initialized = true;
+    }
+    else
+    {
+        // Apply exponential moving average: filtered = alpha * new + (1-alpha) * old
+        smoothed_lx = SMOOTHING_ALPHA * (float)stick_x + (1.0f - SMOOTHING_ALPHA) * smoothed_lx;
+        smoothed_ly = SMOOTHING_ALPHA * (float)stick_y + (1.0f - SMOOTHING_ALPHA) * smoothed_ly;
+    }
+
+    // Convert smoothed float back to int8 for HID report
+    gamepad_lx = (int8_t)roundf(smoothed_lx);
+    gamepad_ly = (int8_t)roundf(smoothed_ly);
+
+    // Calculate magnitude for logging and anomaly detection
+    float magnitude = sqrtf((float)(stick_x * stick_x + stick_y * stick_y));
+
+    // Debug logging (throttled)
+    static int pos_debug_counter = 0;
+    if (++pos_debug_counter >= 100)
+    {
+        pos_debug_counter = 0;
+        ESP_LOGI(TAG, "🎮 Gamepad Position: pos(%.1f, %.1f) -> stick(%d, %d) | mag=%.1f",
+                 pos_x, pos_y, stick_x, stick_y, magnitude);
+    }
+
+    // Safety: detect invalid position calculations (magnitude > 200 suggests calculation error)
+    if (magnitude > 200.0f)
+    {
+        static int anomaly_counter = 0;
+        if (++anomaly_counter >= 10)
+        {
+            anomaly_counter = 0;
+            ESP_LOGW(TAG, "⚠️  Position anomaly: mag=%.1f, pos(%.1f, %.1f) - possible reference frame issue",
+                     magnitude, pos_x, pos_y);
+        }
+    }
+
+    // Use left stick only; right stick centered, triggers off, hat neutral
     sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, 0, 0, gamepad_buttons, 0x0F);
 #endif
 }
@@ -1204,6 +1285,14 @@ void USBHIDManager::setGamepadInvertY(bool invert)
     ESP_LOGI(TAG, "🔄 Gamepad Y-axis invert set to: %s", invert ? "true (INVERTED)" : "false (NORMAL)");
 }
 
+void USBHIDManager::resetGamepadSmoothing()
+{
+    smoothing_initialized = false;
+    smoothed_lx = 0.0f;
+    smoothed_ly = 0.0f;
+    ESP_LOGI(TAG, "🔄 Gamepad smoothing reset");
+}
+
 void USBHIDManager::setSpellGamepadButton(const char *spell_name, uint8_t button)
 {
     if (!spell_name)
@@ -1277,6 +1366,7 @@ bool USBHIDManager::saveSettings() { return true; }
 bool USBHIDManager::resetSettings() { return true; }
 void USBHIDManager::setMouseSensitivityValue(float sensitivity) {}
 void USBHIDManager::updateGamepadFromGesture(float delta_x, float delta_y) {}
+void USBHIDManager::updateGamepadFromPosition(float pos_x, float pos_y) {}
 void USBHIDManager::setGamepadButtons(uint16_t buttons) {}
 void USBHIDManager::setHidMode(HIDMode mode) {}
 void USBHIDManager::setGamepadSensitivityValue(float sensitivity) {}

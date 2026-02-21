@@ -912,6 +912,36 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
         }
     }
 
+    // Manual recenter: 2+ buttons pressed (but not tracking threshold)
+    // This allows manual recentering without starting a spell
+    if (buttonsPressed >= 2 && buttonsPressed < BUTTON_MIN_FOR_TRACKING &&
+        !ahrsTracker.isTracking())
+    {
+        static uint8_t last_recenter_button_count = 0;
+        static uint32_t last_recenter_time_ms = 0;
+        uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+        // Detect new 2-button press (transition) with cooldown
+        if (last_recenter_button_count < 2 && now_ms - last_recenter_time_ms > 500)
+        {
+#if USE_USB_HID_DEVICE
+            if (usbHID.getHidMode() == HID_MODE_GAMEPAD)
+            {
+                ahrsTracker.resetGamepadReference();
+                usbHID.resetGamepadSmoothing();
+                ESP_LOGI(TAG, "🎯 Manual recenter: %d buttons pressed", buttonsPressed);
+                last_recenter_time_ms = now_ms;
+            }
+#endif
+        }
+        last_recenter_button_count = buttonsPressed;
+    }
+    else if (buttonsPressed < 2)
+    {
+        static uint8_t last_recenter_button_count = 0;
+        last_recenter_button_count = 0;
+    }
+
     // 3+ buttons pressed - start tracking (was 4 buttons required)
     if (enoughButtonsPressed && !wasEnoughPressed)
     {
@@ -922,6 +952,15 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
         wandCommands.setLED(LedGroup::TIP, 255, 0, 255);
         if (!ahrsTracker.isTracking())
         {
+            // Recenter gamepad before starting spell tracking
+#if USE_USB_HID_DEVICE
+            if (usbHID.getHidMode() == HID_MODE_GAMEPAD)
+            {
+                ahrsTracker.resetGamepadReference();
+                usbHID.resetGamepadSmoothing();
+                ESP_LOGI(TAG, "🎯 Manual recenter: spell tracking started");
+            }
+#endif
             ahrsTracker.startTracking();
             ESP_LOGI(TAG, "Started spell tracking (%d buttons pressed)", buttonsPressed);
 
@@ -983,6 +1022,13 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
             // Re-enable mouse movement after spell tracking
 #if USE_USB_HID_DEVICE
             usbHID.setInSpellMode(false);
+            // Recenter gamepad after spell tracking completes
+            if (usbHID.getHidMode() == HID_MODE_GAMEPAD)
+            {
+                ahrsTracker.resetGamepadReference();
+                usbHID.resetGamepadSmoothing();
+                ESP_LOGI(TAG, "🎯 Manual recenter: spell tracking stopped");
+            }
 #endif
 
             // Notify web visualizer
@@ -1031,6 +1077,16 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
 
     bool is_tracking = ahrsTracker.isTracking();
 
+    // Auto-recalibration for gamepad mode: DISABLED
+    // Stillness detection was causing random snaps to different positions
+    // Use manual recenter (2-3 buttons) instead
+    // #if USE_USB_HID_DEVICE
+    // if (!is_tracking && usbHID.getHidMode() == HID_MODE_GAMEPAD)
+    // {
+    //     ...
+    // }
+    // #endif
+
     if (is_tracking != was_tracking)
     {
         has_last_mouse_pos = false;
@@ -1043,7 +1099,23 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
     if (!is_tracking)
     {
         Position2D pos;
-        if (ahrsTracker.getMousePosition(pos))
+
+        // Gamepad mode: use simple Euler angle-based position (independent X/Y)
+        // Mouse mode: use quaternion projection (coupled axes, fine for delta-based movement)
+#if USE_USB_HID_DEVICE
+        bool got_position = false;
+        if (usbHID.getHidMode() == HID_MODE_GAMEPAD)
+        {
+            got_position = ahrsTracker.getGamepadPosition(pos);
+        }
+        else
+        {
+            got_position = ahrsTracker.getMousePosition(pos);
+        }
+#else
+        bool got_position = ahrsTracker.getMousePosition(pos);
+#endif
+        if (got_position)
         {
             if (!has_last_mouse_pos)
             {
@@ -1098,23 +1170,26 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                     }
                 }
 #else
-                dy = -dy;     // Default: inverted
+                dy = -dy; // Default: inverted
 #endif
                 accum_dx += dx;
                 accum_dy += dy;
                 last_mouse_pos = pos;
 
-                // Rate limit mouse updates to ~60 Hz (every 4th sample)
+                // Rate limit updates to ~60 Hz (every 4th sample)
                 if (++mouse_counter >= 4)
                 {
 #if USE_USB_HID_DEVICE
                     HIDMode hid_mode = usbHID.getHidMode();
                     if (hid_mode == HID_MODE_GAMEPAD)
                     {
-                        usbHID.updateGamepadFromGesture(accum_dx, accum_dy);
+                        // For gamepad joystick mode: pass absolute position directly
+                        // Position represents wand tilt from neutral, stick follows position
+                        usbHID.updateGamepadFromPosition(pos.x, pos.y);
                     }
                     else if (hid_mode == HID_MODE_MOUSE)
                     {
+                        // For mouse mode: pass accumulated deltas (velocity-based)
                         usbHID.updateMouseFromGesture(accum_dx, accum_dy);
                     }
 #endif

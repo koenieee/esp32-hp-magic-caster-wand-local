@@ -158,7 +158,9 @@ void IMUParser::transformCoordinates(IMUSample &sample)
 // AHRS Tracker Implementation
 // ============================================================================
 
-AHRSTracker::AHRSTracker() : position_count(0), tracking(false), beta(0.1f), initial_yaw(0.0f)
+AHRSTracker::AHRSTracker() : position_count(0), tracking(false), beta(0.1f), initial_yaw(0.0f),
+                             stillness_buffer_index(0), stillness_buffer_count(0),
+                             stillness_variance_threshold(0.0025f), last_still_time_ms(0)
 {
     positions = new (std::nothrow) Position2D[MAX_POSITIONS];
     if (!positions)
@@ -174,9 +176,19 @@ AHRSTracker::AHRSTracker() : position_count(0), tracking(false), beta(0.1f), ini
     mouse_ref_vec_x = mouse_ref_vec_y = mouse_ref_vec_z = 0.0f;
     mouse_initial_yaw = 0.0f;
     mouse_ref_ready = false;
+    mouse_just_reset = false;
+    mouse_offset_x = mouse_offset_y = 0.0f;
+    gamepad_ref_roll = 0.0f;
+    gamepad_ref_pitch = 0.0f;
+    gamepad_ref_ready = false;
+    gamepad_last_roll = 0.0f;
+    gamepad_last_pitch = 0.0f;
     ref_vec_x = ref_vec_y = ref_vec_z = 0.0f;
     start_pos_x = start_pos_y = 0.0f;
     start_pos_z = -294.0f; // Match Python's default start_pos_z = -294.0
+
+    // Initialize stillness buffer with zeros
+    memset(accel_mag_buffer, 0, sizeof(accel_mag_buffer));
 }
 
 AHRSTracker::~AHRSTracker()
@@ -341,6 +353,17 @@ bool AHRSTracker::computePositionFromReference(const Quaternion &start_q, const 
 
 void AHRSTracker::update(const IMUSample &sample)
 {
+    // Track accelerometer magnitude for stillness detection
+    float accel_mag = sqrtf(sample.accel_x * sample.accel_x +
+                            sample.accel_y * sample.accel_y +
+                            sample.accel_z * sample.accel_z);
+    accel_mag_buffer[stillness_buffer_index] = accel_mag;
+    stillness_buffer_index = (stillness_buffer_index + 1) % STILLNESS_BUFFER_SIZE;
+    if (stillness_buffer_count < STILLNESS_BUFFER_SIZE)
+    {
+        stillness_buffer_count++;
+    }
+
     // Python multiplies accel by gravity (9.81) to convert G to m/s²
     constexpr float GRAVITY = 9.8100004196167f;
 
@@ -480,20 +503,122 @@ bool AHRSTracker::getMousePosition(Position2D &out_pos)
 {
     if (!mouse_ref_ready)
     {
+        // First-time initialization - should rarely happen now since reset captures immediately
         initReferenceFromCurrentQuat(mouse_start_quat, mouse_inv_quat,
                                      mouse_ref_vec_x, mouse_ref_vec_y, mouse_ref_vec_z,
                                      mouse_initial_yaw);
         mouse_ref_ready = true;
+        mouse_just_reset = true;
     }
 
-    return computePositionFromReference(mouse_start_quat, mouse_inv_quat,
-                                        mouse_ref_vec_x, mouse_ref_vec_y, mouse_ref_vec_z,
-                                        mouse_initial_yaw, out_pos);
+    bool success = computePositionFromReference(mouse_start_quat, mouse_inv_quat,
+                                                mouse_ref_vec_x, mouse_ref_vec_y, mouse_ref_vec_z,
+                                                mouse_initial_yaw, out_pos);
+
+    if (success)
+    {
+        // On first position read after reset, capture the offset
+        // This ensures position is exactly (0,0) after recenter
+        if (mouse_just_reset)
+        {
+            mouse_offset_x = out_pos.x;
+            mouse_offset_y = out_pos.y;
+            mouse_just_reset = false;
+            ESP_LOGI(TAG, "📍 Offset captured: (%.1f, %.1f) - next position will be (0,0)",
+                     mouse_offset_x, mouse_offset_y);
+        }
+
+        // Apply offset compensation to center position after reset
+        out_pos.x -= mouse_offset_x;
+        out_pos.y -= mouse_offset_y;
+    }
+
+    return success;
 }
 
 void AHRSTracker::resetMouseReference()
 {
-    mouse_ref_ready = false;
+    // CRITICAL FIX: Capture reference frame IMMEDIATELY instead of lazy init
+    // This prevents offset caused by wand movement between button press and next position update
+    initReferenceFromCurrentQuat(mouse_start_quat, mouse_inv_quat,
+                                 mouse_ref_vec_x, mouse_ref_vec_y, mouse_ref_vec_z,
+                                 mouse_initial_yaw);
+    mouse_ref_ready = true;
+    mouse_just_reset = true; // Flag to capture offset on next position read
+    ESP_LOGI(TAG, "📍 Mouse reference captured: yaw=%.2f°", mouse_initial_yaw * 180.0f / M_PI);
+}
+
+bool AHRSTracker::getGamepadPosition(Position2D &out_pos)
+{
+    // Simple Euler angle-based position for gamepad
+    // Roll → X axis (left/right tilt)
+    // Pitch → Y axis (up/down tilt)
+    // These are INDEPENDENT - no cross-axis coupling
+
+    float roll, pitch, yaw;
+    toEuler(quat, roll, pitch, yaw);
+
+    if (!gamepad_ref_ready)
+    {
+        gamepad_ref_roll = roll;
+        gamepad_ref_pitch = pitch;
+        gamepad_ref_ready = true;
+        gamepad_last_roll = roll;
+        gamepad_last_pitch = pitch;
+        ESP_LOGI(TAG, "🎮 Gamepad reference: roll=%.1f° pitch=%.1f°",
+                 roll * 180.0f / M_PI, pitch * 180.0f / M_PI);
+    }
+
+    // Use angular difference via atan2(sin, cos) to avoid wrapping issues
+    // This correctly handles angles crossing ±π boundary
+    float delta_roll = atan2f(sinf(roll - gamepad_ref_roll), cosf(roll - gamepad_ref_roll));
+    float delta_pitch = atan2f(sinf(pitch - gamepad_ref_pitch), cosf(pitch - gamepad_ref_pitch));
+
+    // Rate limiting: reject sudden large jumps (> 30° per sample = ~7000°/s at 234Hz)
+    // This catches Euler angle singularities and AHRS glitches
+    constexpr float MAX_DELTA_PER_SAMPLE = 0.52f; // ~30 degrees in radians
+    float jump_roll = atan2f(sinf(roll - gamepad_last_roll), cosf(roll - gamepad_last_roll));
+    float jump_pitch = atan2f(sinf(pitch - gamepad_last_pitch), cosf(pitch - gamepad_last_pitch));
+
+    if (fabsf(jump_roll) > MAX_DELTA_PER_SAMPLE || fabsf(jump_pitch) > MAX_DELTA_PER_SAMPLE)
+    {
+        // Reject this sample - use previous output
+        static int reject_counter = 0;
+        if (++reject_counter >= 50)
+        {
+            reject_counter = 0;
+            ESP_LOGW(TAG, "⚠️ Gamepad: rejected %d jump samples (roll_jump=%.1f° pitch_jump=%.1f°)",
+                     50, jump_roll * 180.0f / M_PI, jump_pitch * 180.0f / M_PI);
+        }
+        // Don't update last values, keep previous position
+        return true; // out_pos unchanged from last call
+    }
+
+    gamepad_last_roll = roll;
+    gamepad_last_pitch = pitch;
+
+    // Convert radians to position units (~same range as quaternion method)
+    // ~45° tilt (0.785 rad) should give full stick deflection (~300 units)
+    constexpr float RAD_TO_POS = 382.0f;
+
+    out_pos.x = delta_roll * RAD_TO_POS;  // Left/right tilt → X
+    out_pos.y = delta_pitch * RAD_TO_POS; // Up/down tilt → Y
+
+    return true;
+}
+
+void AHRSTracker::resetGamepadReference()
+{
+    // Capture current roll/pitch as the gamepad center position
+    float roll, pitch, yaw;
+    toEuler(quat, roll, pitch, yaw);
+    gamepad_ref_roll = roll;
+    gamepad_ref_pitch = pitch;
+    gamepad_ref_ready = true;
+    gamepad_last_roll = roll;
+    gamepad_last_pitch = pitch;
+    ESP_LOGI(TAG, "🎮 Gamepad recenter: roll=%.1f° pitch=%.1f°",
+             roll * 180.0f / M_PI, pitch * 180.0f / M_PI);
 }
 
 void AHRSTracker::reset()
@@ -503,6 +628,35 @@ void AHRSTracker::reset()
     position_count = 0;
     tracking = false;
     mouse_ref_ready = false;
+}
+
+bool AHRSTracker::isStill() const
+{
+    // Need at least full buffer to compute reliable variance
+    if (stillness_buffer_count < STILLNESS_BUFFER_SIZE)
+    {
+        return false;
+    }
+
+    // Compute mean
+    float mean = 0.0f;
+    for (size_t i = 0; i < STILLNESS_BUFFER_SIZE; i++)
+    {
+        mean += accel_mag_buffer[i];
+    }
+    mean /= STILLNESS_BUFFER_SIZE;
+
+    // Compute variance
+    float variance = 0.0f;
+    for (size_t i = 0; i < STILLNESS_BUFFER_SIZE; i++)
+    {
+        float diff = accel_mag_buffer[i] - mean;
+        variance += diff * diff;
+    }
+    variance /= STILLNESS_BUFFER_SIZE;
+
+    // Check if variance is below threshold
+    return variance < stillness_variance_threshold;
 }
 
 float AHRSTracker::wrapTo2Pi(float angle)

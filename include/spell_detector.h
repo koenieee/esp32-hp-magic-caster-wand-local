@@ -86,6 +86,15 @@ private:
     float mouse_ref_vec_x, mouse_ref_vec_y, mouse_ref_vec_z;
     float mouse_initial_yaw;
     bool mouse_ref_ready;
+    bool mouse_just_reset;                // Flag: just reset reference, need to capture offset
+    float mouse_offset_x, mouse_offset_y; // Position offset to compensate for non-zero position after reset
+
+    // Simple Euler-angle based gamepad position (independent X/Y axes)
+    float gamepad_ref_roll;
+    float gamepad_ref_pitch;
+    bool gamepad_ref_ready;
+    float gamepad_last_roll; // For rate-of-change limiting
+    float gamepad_last_pitch;
 
     Position2D *positions;
     size_t position_count;
@@ -97,6 +106,14 @@ private:
     float ref_vec_x, ref_vec_y, ref_vec_z;
     float start_pos_x, start_pos_y, start_pos_z;
     float initial_yaw; // Save yaw at tracking start for relative calculations
+
+    // Stillness detection for auto-centering gamepad
+    static constexpr size_t STILLNESS_BUFFER_SIZE = 50; // ~0.2 seconds at 234 Hz
+    float accel_mag_buffer[STILLNESS_BUFFER_SIZE];
+    size_t stillness_buffer_index;
+    size_t stillness_buffer_count;
+    float stillness_variance_threshold; // G^2 units
+    uint32_t last_still_time_ms;        // Timestamp of last stillness detection
 
     // Fast inverse square root (Quake III algorithm)
     float invSqrt(float x);
@@ -145,14 +162,32 @@ public:
     // Get positions array (for web visualization) - read-only access
     const Position2D *getPositions() const { return positions; }
 
-    // Get current mouse position (AHRS fused path)
+    // Get current mouse position (AHRS fused path) - quaternion projection for spell tracking/mouse
     bool getMousePosition(Position2D &out_pos);
+
+    // Get gamepad position using simple Euler angles (independent X/Y axes, no cross-axis coupling)
+    bool getGamepadPosition(Position2D &out_pos);
 
     // Reset mouse reference (recenters on next update)
     void resetMouseReference();
 
+    // Reset gamepad reference (stores current roll/pitch as center)
+    void resetGamepadReference();
+
     // Reset AHRS state
     void reset();
+
+    // Get current quaternion (for advanced usage)
+    const Quaternion &getQuaternion() const { return quat; }
+
+    // Check if wand is currently still (for auto-centering)
+    bool isStill() const;
+
+    // Get stillness variance threshold
+    float getStillnessThreshold() const { return stillness_variance_threshold; }
+
+    // Set stillness variance threshold (default: 0.05 G^2)
+    void setStillnessThreshold(float threshold) { stillness_variance_threshold = threshold; }
 };
 
 // Gesture Preprocessor - normalizes positions for model input

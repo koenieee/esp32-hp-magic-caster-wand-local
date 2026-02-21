@@ -42,13 +42,15 @@ public:
     // Mouse functions (gyro-based air mouse)
     void updateMouse(float gyro_x, float gyro_y, float gyro_z);
     void updateMouseFromGesture(float delta_x, float delta_y);
-    void updateGamepadFromGesture(float delta_x, float delta_y);
+    void updateGamepadFromGesture(float delta_x, float delta_y); // Legacy: delta-based
+    void updateGamepadFromPosition(float pos_x, float pos_y);    // New: absolute position for joystick
     void setGamepadButtons(uint16_t buttons);
     void mouseClick(uint8_t button); // 1=left, 2=right, 4=middle
     void setMouseSensitivity(float sensitivity);
     void setGamepadSensitivityValue(float sensitivity);
     void setGamepadDeadzoneValue(float deadzone);
     void setGamepadInvertY(bool invert);
+    void resetGamepadSmoothing(); // Reset smoothing filter (call on recenter)
 
     // Keyboard functions (spell to key mapping)
     void sendKeyPress(uint8_t keycode, uint8_t modifiers = 0);
@@ -116,6 +118,11 @@ private:
     int8_t gamepad_ly;
     int8_t gamepad_rx;
     int8_t gamepad_ry;
+
+    // Smoothing for gamepad position
+    float smoothed_lx;
+    float smoothed_ly;
+    bool smoothing_initialized;
 
     // Helper functions
     void sendMouseReport(int8_t x, int8_t y, int8_t wheel, uint8_t buttons);
