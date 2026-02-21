@@ -506,17 +506,30 @@ static const char index_html[] = R"rawliteral(
                         <div style="margin: 10px 0; border-top: 1px solid #444; padding-top: 10px;">
                             <label style="display: block; margin-bottom: 5px;">HID Mode:</label>
                             <select id="hid-mode" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
-                                <option value="0">Mouse - Wand controls cursor + spell keys</option>
-                                <option value="1">Keyboard - Spell keys only</option>
-                                <option value="2">Gamepad - Wand controls joystick + spell buttons</option>
-                                <option value="3">Disabled - No HID output</option>
+                                <option value="0">Mouse - Wand controls cursor, spells send keyboard keys</option>
+                                <option value="1">Keyboard - Spells send keyboard keys only</option>
+                                <option value="2">Gamepad Only - Wand controls joystick, spells send gamepad inputs</option>
+                                <option value="3">Gamepad Mixed - Wand controls joystick, spells send keyboard keys</option>
+                                <option value="4">Disabled - No HID output</option>
                             </select>
                             <div style="font-size: 0.8em; color: #4CAF50; margin-top: 8px; padding: 8px; background: rgba(76, 175, 80, 0.1); border-left: 3px solid #4CAF50; border-radius: 4px;">
-                                <strong>ℹ️ Mixed Mode Tip:</strong><br>
-                                • <strong>Mouse mode:</strong> Wand movement controls cursor AND detected spells send keyboard keys!<br>
-                                • <strong>Keyboard mode:</strong> Only spell detection sends keys (no mouse movement)<br>
-                                • <strong>Gamepad mode:</strong> Wand controls joystick AND spells trigger gamepad buttons<br>
-                                • This lets you aim with the wand while casting spells as hotkeys!
+                                <strong>ℹ️ Mode Descriptions:</strong><br>
+                                • <strong>Mouse:</strong> Wand movement → cursor, detected spells → keyboard hotkeys<br>
+                                • <strong>Keyboard:</strong> Only spell detection sends keyboard keys (no cursor control)<br>
+                                • <strong>Gamepad Only:</strong> Wand → joystick, spells → gamepad buttons/D-pad/triggers<br>
+                                • <strong>Gamepad Mixed:</strong> Wand → joystick, spells → keyboard hotkeys (perfect for Hogwarts Legacy!)<br>
+                                • Configure spell mappings in sections below based on selected mode
+                            </div>
+                        </div>
+                        <div style="margin: 10px 0; border-top: 1px solid #444; padding-top: 10px;">
+                            <label style="display: block; margin-bottom: 5px;">Gamepad Stick Selection:</label>
+                            <select id="gamepad-stick-mode" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
+                                <option value="0">Left Stick</option>
+                                <option value="1">Right Stick</option>
+                            </select>
+                            <div style="font-size: 0.8em; color: #888; margin-top: 5px;">
+                                🎮 Choose which analog stick the wand controls in gamepad modes<br>
+                                💡 Left stick typically controls movement, right stick controls camera
                             </div>
                         </div>
                         <div style="margin: 10px 0; border-top: 1px solid #444; padding-top: 10px;">
@@ -1512,17 +1525,27 @@ static const char index_html[] = R"rawliteral(
         ];
 
         const GAMEPAD_BUTTON_OPTIONS = [
-            { label: 'Disabled', value: 0 },
-            { label: 'Button 1', value: 1 },
-            { label: 'Button 2', value: 2 },
-            { label: 'Button 3', value: 3 },
-            { label: 'Button 4', value: 4 },
-            { label: 'Button 5', value: 5 },
-            { label: 'Button 6', value: 6 },
-            { label: 'Button 7', value: 7 },
-            { label: 'Button 8', value: 8 },
-            { label: 'Button 9', value: 9 },
-            { label: 'Button 10', value: 10 }
+            { group: 'Common', label: 'Disabled', value: 0 },
+            { group: 'Face Buttons', label: 'A (Button 1)', value: 1 },
+            { group: 'Face Buttons', label: 'B (Button 2)', value: 2 },
+            { group: 'Face Buttons', label: 'X (Button 3)', value: 3 },
+            { group: 'Face Buttons', label: 'Y (Button 4)', value: 4 },
+            { group: 'Shoulder Buttons', label: 'LB (Button 5)', value: 5 },
+            { group: 'Shoulder Buttons', label: 'RB (Button 6)', value: 6 },
+            { group: 'Menu Buttons', label: 'Back/Select (Button 7)', value: 7 },
+            { group: 'Menu Buttons', label: 'Start (Button 8)', value: 8 },
+            { group: 'Stick Buttons', label: 'Left Stick (Button 9)', value: 9 },
+            { group: 'Stick Buttons', label: 'Right Stick (Button 10)', value: 10 },
+            { group: 'Extra Buttons', label: 'Button 11', value: 11 },
+            { group: 'Extra Buttons', label: 'Button 12', value: 12 },
+            { group: 'Extra Buttons', label: 'Button 13', value: 13 },
+            { group: 'Extra Buttons', label: 'Button 14', value: 14 },
+            { group: 'D-Pad', label: 'D-Pad Up', value: 15 },
+            { group: 'D-Pad', label: 'D-Pad Down', value: 16 },
+            { group: 'D-Pad', label: 'D-Pad Left', value: 17 },
+            { group: 'D-Pad', label: 'D-Pad Right', value: 18 },
+            { group: 'Triggers', label: 'Left Trigger (LT)', value: 19 },
+            { group: 'Triggers', label: 'Right Trigger (RT)', value: 20 }
         ];
 
         function buildKeySelectOptions(select) {
@@ -1542,12 +1565,19 @@ static const char index_html[] = R"rawliteral(
         }
 
         function buildGamepadSelectOptions(select) {
+            const groups = new Map();
             GAMEPAD_BUTTON_OPTIONS.forEach((opt) => {
+                if (!groups.has(opt.group)) {
+                    const optgroup = document.createElement('optgroup');
+                    optgroup.label = opt.group;
+                    groups.set(opt.group, optgroup);
+                }
                 const option = document.createElement('option');
                 option.value = opt.value;
                 option.textContent = opt.label;
-                select.appendChild(option);
+                groups.get(opt.group).appendChild(option);
             });
+            groups.forEach((optgroup) => select.appendChild(optgroup));
         }
 
         // Populate spell mapping dropdowns
@@ -1650,6 +1680,7 @@ static const char index_html[] = R"rawliteral(
                 gamepad_sensitivity: parseFloat(document.getElementById('gamepad-sensitivity').value),
                 gamepad_deadzone: parseFloat(document.getElementById('gamepad-deadzone').value),
                 gamepad_invert_y: invertGamepadY,
+                gamepad_stick_mode: parseInt(document.getElementById('gamepad-stick-mode').value),
                 ha_mqtt_enabled: document.getElementById('ha-mqtt-enabled').checked,
                 mqtt_broker: document.getElementById('mqtt-broker').value,
                 mqtt_username: document.getElementById('mqtt-username').value,
@@ -1710,8 +1741,10 @@ static const char index_html[] = R"rawliteral(
                     document.getElementById('gamepad-deadzone').value = (data.gamepad_deadzone !== undefined) ? data.gamepad_deadzone : 0.05;
                     document.getElementById('gpad-deadzone-value').textContent = ((data.gamepad_deadzone !== undefined) ? data.gamepad_deadzone : 0.05).toFixed(2);
                     document.getElementById('invert-gamepad-y').checked = (data.gamepad_invert_y === true);
+                    document.getElementById('gamepad-stick-mode').value = (data.gamepad_stick_mode !== undefined) ? data.gamepad_stick_mode : 0;
                     
                     console.log('✅ Set invert-gamepad-y checkbox to:', document.getElementById('invert-gamepad-y').checked);
+                    console.log('✅ Set gamepad-stick-mode to:', document.getElementById('gamepad-stick-mode').value);
                     document.getElementById('ha-mqtt-enabled').checked = data.ha_mqtt_enabled !== false;
                     document.getElementById('mqtt-broker').value = data.mqtt_broker || '';
                     document.getElementById('mqtt-username').value = data.mqtt_username || '';
@@ -3056,21 +3089,23 @@ esp_err_t WebServer::settings_get_handler(httpd_req_t *req)
     float gamepad_sens = usbHID.getGamepadSensitivity();
     float gamepad_deadzone = usbHID.getGamepadDeadzone();
     bool gamepad_invert = usbHID.getGamepadInvertY();
+    uint8_t gamepad_stick_mode = usbHID.getGamepadStickMode();
 
     ESP_LOGI(TAG, "📤 Sending settings to UI:");
     ESP_LOGI(TAG, "   mouse_sensitivity=%.2f, invert_mouse_y=%s", mouse_sens, mouse_invert ? "true" : "false");
     ESP_LOGI(TAG, "   hid_mode=%u", static_cast<unsigned>(hid_mode));
-    ESP_LOGI(TAG, "   gamepad_sensitivity=%.2f, gamepad_deadzone=%.2f, gamepad_invert_y=%s",
-             gamepad_sens, gamepad_deadzone, gamepad_invert ? "true" : "false");
+    ESP_LOGI(TAG, "   gamepad_sensitivity=%.2f, gamepad_deadzone=%.2f, gamepad_invert_y=%s, gamepad_stick_mode=%u",
+             gamepad_sens, gamepad_deadzone, gamepad_invert ? "true" : "false", gamepad_stick_mode);
 
     offset += snprintf(buffer + offset, buffer_size - offset,
-                       "{\"mouse_sensitivity\": %.2f, \"invert_mouse_y\": %s, \"hid_mode\": %u, \"gamepad_sensitivity\": %.2f, \"gamepad_deadzone\": %.2f, \"gamepad_invert_y\": %s, \"spells\": [",
+                       "{\"mouse_sensitivity\": %.2f, \"invert_mouse_y\": %s, \"hid_mode\": %u, \"gamepad_sensitivity\": %.2f, \"gamepad_deadzone\": %.2f, \"gamepad_invert_y\": %s, \"gamepad_stick_mode\": %u, \"spells\": [",
                        mouse_sens,
                        mouse_invert ? "true" : "false",
                        static_cast<unsigned>(hid_mode),
                        gamepad_sens,
                        gamepad_deadzone,
-                       gamepad_invert ? "true" : "false");
+                       gamepad_invert ? "true" : "false",
+                       gamepad_stick_mode);
 
     const uint8_t *spell_keycodes = usbHID.getSpellKeycodes();
     for (int i = 0; i < 73; i++)
@@ -3357,6 +3392,16 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
         }
         usbHID.setGamepadInvertY(invert);
         ESP_LOGI(TAG, "✅ Called setGamepadInvertY(%s)", invert ? "true" : "false");
+    }
+
+    // Parse gamepad stick mode
+    char *gpad_stick_ptr = strstr(buffer, "\"gamepad_stick_mode\"");
+    if (gpad_stick_ptr)
+    {
+        int stick_mode = 0;
+        sscanf(gpad_stick_ptr, "\"gamepad_stick_mode\" : %d", &stick_mode);
+        ESP_LOGI(TAG, "📝 Parsed gamepad_stick_mode: %d (%s)", stick_mode, stick_mode == 0 ? "left" : "right");
+        usbHID.setGamepadStickMode((uint8_t)stick_mode);
     }
 
     // Parse HA MQTT enabled

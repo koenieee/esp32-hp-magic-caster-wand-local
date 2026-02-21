@@ -22,6 +22,10 @@ extern USBHIDManager usbHID;
 // Global for scan callback
 static WebServer *g_web_server = nullptr;
 
+// Post-spell cooldown state (for gamepad recenter)
+static bool g_post_spell_cooldown_active = false;
+static uint32_t g_post_spell_cooldown_start_ms = 0;
+
 // ============================================================================
 // ESPHome-inspired BLE connection parameters (esp32_ble_client/ble_client_base.cpp)
 // ============================================================================
@@ -892,7 +896,8 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
     bool wasEnoughPressed = (__builtin_popcount(lastButtonState & 0x0F) >= BUTTON_MIN_FOR_TRACKING);
 
 #if USE_USB_HID_DEVICE
-    if (usbHID.getHidMode() != HID_MODE_GAMEPAD)
+    HIDMode hid_mode = usbHID.getHidMode();
+    if (hid_mode != HID_MODE_GAMEPAD_ONLY && hid_mode != HID_MODE_GAMEPAD_MIXED)
     {
         usbHID.setGamepadButtons(buttonState & 0x0F);
     }
@@ -925,12 +930,16 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
         if (last_recenter_button_count < 2 && now_ms - last_recenter_time_ms > 500)
         {
 #if USE_USB_HID_DEVICE
-            if (usbHID.getHidMode() == HID_MODE_GAMEPAD)
+            HIDMode hid_mode = usbHID.getHidMode();
+            if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED)
             {
                 ahrsTracker.resetGamepadReference();
                 usbHID.resetGamepadSmoothing();
                 ESP_LOGI(TAG, "🎯 Manual recenter: %d buttons pressed", buttonsPressed);
                 last_recenter_time_ms = now_ms;
+
+                // Cancel post-spell cooldown if active
+                g_post_spell_cooldown_active = false;
             }
 #endif
         }
@@ -954,11 +963,15 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
         {
             // Recenter gamepad before starting spell tracking
 #if USE_USB_HID_DEVICE
-            if (usbHID.getHidMode() == HID_MODE_GAMEPAD)
+            HIDMode hid_mode = usbHID.getHidMode();
+            if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED)
             {
                 ahrsTracker.resetGamepadReference();
                 usbHID.resetGamepadSmoothing();
                 ESP_LOGI(TAG, "🎯 Manual recenter: spell tracking started");
+
+                // Cancel post-spell cooldown if active
+                g_post_spell_cooldown_active = false;
             }
 #endif
             ahrsTracker.startTracking();
@@ -1022,12 +1035,13 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
             // Re-enable mouse movement after spell tracking
 #if USE_USB_HID_DEVICE
             usbHID.setInSpellMode(false);
-            // Recenter gamepad after spell tracking completes
-            if (usbHID.getHidMode() == HID_MODE_GAMEPAD)
+            // Start 2-second cooldown before recentering (user returns to rest position)
+            HIDMode hid_mode = usbHID.getHidMode();
+            if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED)
             {
-                ahrsTracker.resetGamepadReference();
-                usbHID.resetGamepadSmoothing();
-                ESP_LOGI(TAG, "🎯 Manual recenter: spell tracking stopped");
+                g_post_spell_cooldown_active = true;
+                g_post_spell_cooldown_start_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+                ESP_LOGI(TAG, "🎯 Post-spell cooldown: waiting 2s before recenter");
             }
 #endif
 
@@ -1104,7 +1118,8 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
         // Mouse mode: use quaternion projection (coupled axes, fine for delta-based movement)
 #if USE_USB_HID_DEVICE
         bool got_position = false;
-        if (usbHID.getHidMode() == HID_MODE_GAMEPAD)
+        HIDMode hid_mode = usbHID.getHidMode();
+        if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED)
         {
             got_position = ahrsTracker.getGamepadPosition(pos);
         }
@@ -1145,7 +1160,7 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                                                                                 : "ZERO");
                     }
                 }
-                else if (current_mode == HID_MODE_GAMEPAD)
+                else if (current_mode == HID_MODE_GAMEPAD_ONLY || current_mode == HID_MODE_GAMEPAD_MIXED)
                 {
                     bool invert = usbHID.getGamepadInvertY();
                     dy = invert ? -dy : dy;
@@ -1181,11 +1196,36 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                 {
 #if USE_USB_HID_DEVICE
                     HIDMode hid_mode = usbHID.getHidMode();
-                    if (hid_mode == HID_MODE_GAMEPAD)
+                    if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED)
                     {
-                        // For gamepad joystick mode: pass absolute position directly
-                        // Position represents wand tilt from neutral, stick follows position
-                        usbHID.updateGamepadFromPosition(pos.x, pos.y);
+                        // Check for post-spell cooldown
+                        if (g_post_spell_cooldown_active)
+                        {
+                            uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+                            uint32_t elapsed_ms = now_ms - g_post_spell_cooldown_start_ms;
+
+                            if (elapsed_ms >= 2000)
+                            {
+                                // Cooldown expired: recenter and resume normal operation
+                                ahrsTracker.resetGamepadReference();
+                                usbHID.resetGamepadSmoothing();
+                                g_post_spell_cooldown_active = false;
+                                ESP_LOGI(TAG, "🎯 Post-spell recenter: cooldown complete");
+                                // Send centered position this frame
+                                usbHID.updateGamepadFromPosition(0.0f, 0.0f);
+                            }
+                            else
+                            {
+                                // During cooldown: send centered position, ignore wand movement
+                                usbHID.updateGamepadFromPosition(0.0f, 0.0f);
+                            }
+                        }
+                        else
+                        {
+                            // Normal operation: pass absolute position directly
+                            // Position represents wand tilt from neutral, stick follows position
+                            usbHID.updateGamepadFromPosition(pos.x, pos.y);
+                        }
                     }
                     else if (hid_mode == HID_MODE_MOUSE)
                     {
@@ -1238,7 +1278,7 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                                      original_dy, invert ? "true" : "false", dy);
                         }
                     }
-                    else if (current_mode == HID_MODE_GAMEPAD)
+                    else if (current_mode == HID_MODE_GAMEPAD_ONLY || current_mode == HID_MODE_GAMEPAD_MIXED)
                     {
                         bool invert = usbHID.getGamepadInvertY();
                         dy = invert ? -dy : dy;
@@ -1264,7 +1304,7 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                     {
 #if USE_USB_HID_DEVICE
                         HIDMode hid_mode = usbHID.getHidMode();
-                        if (hid_mode == HID_MODE_GAMEPAD)
+                        if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED)
                         {
                             usbHID.updateGamepadFromGesture(accum_dx, accum_dy);
                         }

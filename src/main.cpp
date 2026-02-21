@@ -323,9 +323,6 @@ void onIMUData(float ax, float ay, float az, float gx, float gy, float gz)
 
 extern "C" void app_main()
 {
-    // Wait 3 seconds for serial monitor to connect and catch all startup logs
-    vTaskDelay(30000 / portTICK_PERIOD_MS);
-
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "================================================");
     ESP_LOGI(TAG, "  ESP32-S3 Magic Wand Gateway Starting...");

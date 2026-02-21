@@ -102,13 +102,27 @@ static const uint8_t hid_report_descriptor[] = {
     0x95, 0x02, //   Report Count (2)
     0x81, 0x02, //   Input (Data, Variable, Absolute)
 
-    // Triggers (LT, RT) - Z axis
-    0x09, 0x32, //   Usage (Z) - Left Trigger
-    0x09, 0x35, //   Usage (Rz) - Right Trigger
+    // Triggers (LT, RT) - Use Simulation Control page like Xbox controllers
+    0x05, 0x02, //   Usage Page (Simulation Controls)
+
+    // Left Trigger (Brake)
+    0x09, 0xC5, //   Usage (Brake)
     0x15, 0x00, //   Logical Minimum (0)
     0x25, 0xFF, //   Logical Maximum (255)
+    0x35, 0x00, //   Physical Minimum (0)
+    0x45, 0xFF, //   Physical Maximum (255)
     0x75, 0x08, //   Report Size (8)
-    0x95, 0x02, //   Report Count (2)
+    0x95, 0x01, //   Report Count (1)
+    0x81, 0x02, //   Input (Data, Variable, Absolute)
+
+    // Right Trigger (Accelerator)
+    0x09, 0xC4, //   Usage (Accelerator)
+    0x15, 0x00, //   Logical Minimum (0)
+    0x25, 0xFF, //   Logical Maximum (255)
+    0x35, 0x00, //   Physical Minimum (0)
+    0x45, 0xFF, //   Physical Maximum (255)
+    0x75, 0x08, //   Report Size (8)
+    0x95, 0x01, //   Report Count (1)
     0x81, 0x02, //   Input (Data, Variable, Absolute)
 
     // Buttons (14 buttons: A, B, X, Y, LB, RB, Back, Start, LS, RS, + 4 extra)
@@ -356,6 +370,9 @@ USBHIDManager::USBHIDManager()
       gamepad_ly(0),
       gamepad_rx(0),
       gamepad_ry(0),
+      gamepad_lt(0),
+      gamepad_rt(0),
+      gamepad_hat(8),
       smoothed_lx(0.0f),
       smoothed_ly(0.0f),
       smoothing_initialized(false)
@@ -369,6 +386,7 @@ USBHIDManager::USBHIDManager()
     settings.gamepad_sensitivity = 1.0f;
     settings.gamepad_deadzone = 0.05f;
     settings.gamepad_invert_y = false; // Default: natural (wand UP = stick UP)
+    settings.gamepad_stick_mode = 0;   // Default: left stick
     // Initialize all spell keycodes to 0 (disabled)
     memset(settings.spell_keycodes, 0, sizeof(settings.spell_keycodes));
     memset(settings.spell_gamepad_buttons, 0, sizeof(settings.spell_gamepad_buttons));
@@ -496,7 +514,8 @@ void USBHIDManager::updateMouseFromGesture(float delta_x, float delta_y)
 void USBHIDManager::updateGamepadFromGesture(float delta_x, float delta_y)
 {
 #if USE_USB_HID_DEVICE
-    if (!initialized || in_spell_mode || getHidMode() != HID_MODE_GAMEPAD)
+    HIDMode mode = getHidMode();
+    if (!initialized || in_spell_mode || (mode != HID_MODE_GAMEPAD_ONLY && mode != HID_MODE_GAMEPAD_MIXED))
         return;
 
     float scale = settings.gamepad_sensitivity;
@@ -522,15 +541,16 @@ void USBHIDManager::updateGamepadFromGesture(float delta_x, float delta_y)
     if (gamepad_ly > -deadzone && gamepad_ly < deadzone)
         gamepad_ly = 0;
 
-    // Use left stick only; right stick centered, triggers off, hat neutral.
-    sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, 0, 0, gamepad_buttons, 0x0F);
+    // Use left stick only; preserve current triggers/hat state
+    sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, gamepad_lt, gamepad_rt, gamepad_buttons, gamepad_hat);
 #endif
 }
 
 void USBHIDManager::updateGamepadFromPosition(float pos_x, float pos_y)
 {
 #if USE_USB_HID_DEVICE
-    if (!initialized || in_spell_mode || getHidMode() != HID_MODE_GAMEPAD)
+    HIDMode mode = getHidMode();
+    if (!initialized || in_spell_mode || (mode != HID_MODE_GAMEPAD_ONLY && mode != HID_MODE_GAMEPAD_MIXED))
         return;
 
     // Position scaling: AHRS positions are typically in range ~[-300, +300]
@@ -573,8 +593,26 @@ void USBHIDManager::updateGamepadFromPosition(float pos_x, float pos_y)
     }
 
     // Convert smoothed float back to int8 for HID report
-    gamepad_lx = (int8_t)roundf(smoothed_lx);
-    gamepad_ly = (int8_t)roundf(smoothed_ly);
+    int8_t final_x = (int8_t)roundf(smoothed_lx);
+    int8_t final_y = (int8_t)roundf(smoothed_ly);
+
+    // Assign to selected stick (0=left, 1=right)
+    if (settings.gamepad_stick_mode == 0)
+    {
+        // Left stick
+        gamepad_lx = final_x;
+        gamepad_ly = final_y;
+        gamepad_rx = 0;
+        gamepad_ry = 0;
+    }
+    else
+    {
+        // Right stick
+        gamepad_lx = 0;
+        gamepad_ly = 0;
+        gamepad_rx = final_x;
+        gamepad_ry = final_y;
+    }
 
     // Calculate magnitude for logging and anomaly detection
     float magnitude = sqrtf((float)(stick_x * stick_x + stick_y * stick_y));
@@ -600,8 +638,8 @@ void USBHIDManager::updateGamepadFromPosition(float pos_x, float pos_y)
         }
     }
 
-    // Use left stick only; right stick centered, triggers off, hat neutral
-    sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, 0, 0, gamepad_buttons, 0x0F);
+    // Use assigned stick based on gamepad_stick_mode; preserve current triggers/hat
+    sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, gamepad_lt, gamepad_rt, gamepad_buttons, gamepad_hat);
 #endif
 }
 
@@ -610,9 +648,10 @@ void USBHIDManager::setGamepadButtons(uint16_t buttons)
     gamepad_buttons = buttons & 0x3FFF; // 14 buttons max
 
 #if USE_USB_HID_DEVICE
-    if (initialized && getHidMode() == HID_MODE_GAMEPAD)
+    HIDMode mode = getHidMode();
+    if (initialized && (mode == HID_MODE_GAMEPAD_ONLY || mode == HID_MODE_GAMEPAD_MIXED))
     {
-        sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, 0, 0, gamepad_buttons, 0x0F);
+        sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, gamepad_lt, gamepad_rt, gamepad_buttons, gamepad_hat);
     }
 #endif
 }
@@ -755,9 +794,13 @@ void USBHIDManager::setHidMode(HIDMode mode)
         mouse_enabled = false;
         keyboard_enabled = true;
         break;
-    case HID_MODE_GAMEPAD:
+    case HID_MODE_GAMEPAD_ONLY:
         mouse_enabled = false;
-        keyboard_enabled = false;
+        keyboard_enabled = false; // Gamepad buttons only
+        break;
+    case HID_MODE_GAMEPAD_MIXED:
+        mouse_enabled = false;
+        keyboard_enabled = true; // Enable keyboard for spell hotkeys
         break;
     case HID_MODE_DISABLED:
     default:
@@ -768,6 +811,23 @@ void USBHIDManager::setHidMode(HIDMode mode)
     settings.mouse_enabled = mouse_enabled;
     settings.keyboard_enabled = keyboard_enabled;
     ESP_LOGI(TAG, "HID mode set to %u (mouse=%d, keyboard=%d)", settings.hid_mode, mouse_enabled, keyboard_enabled);
+
+#if USE_USB_HID_DEVICE
+    // Send initial "all released" gamepad report when entering gamepad mode
+    if (mode == HID_MODE_GAMEPAD_ONLY || mode == HID_MODE_GAMEPAD_MIXED)
+    {
+        gamepad_buttons = 0;
+        gamepad_lx = 0;
+        gamepad_ly = 0;
+        gamepad_rx = 0;
+        gamepad_ry = 0;
+        gamepad_lt = 0;
+        gamepad_rt = 0;
+        gamepad_hat = 8;
+        sendGamepadReport(0, 0, 0, 0, 0, 0, 0, 8); // All centered, HAT=8 (null state)
+        ESP_LOGI(TAG, "Sent initial gamepad reset report");
+    }
+#endif
 }
 
 void USBHIDManager::sendMouseReport(int8_t x, int8_t y, int8_t wheel, uint8_t buttons)
@@ -803,7 +863,14 @@ void USBHIDManager::sendGamepadReport(int8_t lx, int8_t ly, int8_t rx, int8_t ry
     report[5] = rt;                               // Right trigger (Rz axis)
     report[6] = (uint8_t)(buttons & 0xFF);        // Buttons 1-8
     report[7] = (uint8_t)((buttons >> 8) & 0x3F); // Buttons 9-14 (6 bits) + 2 bits padding
-    report[8] = (uint8_t)(hat & 0x0F);            // D-pad hat (4 bits) + 4 bits padding
+    report[8] = (uint8_t)(hat & 0x0F);            // D-pad hat (4 bits, 8=null/center) + 4 bits padding
+
+    // Debug logging for trigger values (only log when triggers are non-zero)
+    if (lt > 0 || rt > 0)
+    {
+        ESP_LOGI(TAG, "📊 USB Report: LX=%d LY=%d RX=%d RY=%d LT=%d RT=%d BTN=0x%04X HAT=%d",
+                 lx, ly, rx, ry, lt, rt, buttons, hat);
+    }
 
     tud_hid_report(3, report, sizeof(report)); // Report ID 3 = Gamepad
 #endif
@@ -866,17 +933,37 @@ uint8_t USBHIDManager::getKeycodeForSpell(const char *spell_name)
 void USBHIDManager::sendSpellKeyboardForSpell(const char *spell_name)
 {
 #if USE_USB_HID_DEVICE
-    // Allow keyboard spell triggers in both Mouse and Keyboard modes
-    if (!spell_name || (getHidMode() != HID_MODE_KEYBOARD && getHidMode() != HID_MODE_MOUSE))
+    // Allow keyboard spell triggers in Mouse, Keyboard, and Gamepad modes (mixed mode)
+    if (!spell_name)
+        return;
+
+    HIDMode mode = getHidMode();
+    if (mode != HID_MODE_KEYBOARD && mode != HID_MODE_MOUSE && mode != HID_MODE_GAMEPAD_MIXED)
         return;
 
     uint8_t keycode = getSpellKeycode(spell_name);
     if (keycode != 0)
     {
-        ESP_LOGI(TAG, "Spell '%s': Sending key 0x%02X", spell_name, keycode);
-        sendKeyPress(keycode, 0);
-        vTaskDelay(pdMS_TO_TICKS(50));
-        sendKeyRelease();
+        ESP_LOGI(TAG, "Spell '%s': Sending key 0x%02X (mode=%d)", spell_name, keycode, mode);
+
+        if (mode == HID_MODE_GAMEPAD_MIXED)
+        {
+            // In gamepad mixed mode, bypass sendKeyPress gating and send keyboard report directly
+            // This allows mixed gamepad joystick + keyboard spell keys
+            if (initialized && tud_hid_ready())
+            {
+                sendKeyboardReport(0, keycode); // Press key
+                vTaskDelay(pdMS_TO_TICKS(50));
+                sendKeyboardReport(0, 0); // Release key
+            }
+        }
+        else
+        {
+            // Mouse and Keyboard modes use normal keyboard path
+            sendKeyPress(keycode, 0);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            sendKeyRelease();
+        }
     }
     else
     {
@@ -945,48 +1032,6 @@ bool USBHIDManager::loadSettings()
         ESP_LOGI(TAG, "⚠ Mouse sensitivity not found in NVS, using default: 1.0");
     }
 
-    // Load gamepad sensitivity (stored as uint8_t: value * 10)
-    uint8_t gpad_sens_10x = 10; // Default 1.0x
-    err = nvs_get_u8(nvs_handle, "gamepad_sens_10x", &gpad_sens_10x);
-    if (err == ESP_OK)
-    {
-        settings.gamepad_sensitivity = (float)gpad_sens_10x / 10.0f;
-        ESP_LOGI(TAG, "✓ Loaded gamepad_sensitivity from NVS: %.2f (raw: %d)", settings.gamepad_sensitivity, gpad_sens_10x);
-    }
-    else
-    {
-        settings.gamepad_sensitivity = 1.0f;
-        ESP_LOGI(TAG, "⚠ Gamepad sensitivity not found in NVS, using default: 1.0");
-    }
-
-    // Load gamepad deadzone (stored as uint8_t: value * 100)
-    uint8_t gpad_deadzone_100 = 5; // Default 0.05
-    err = nvs_get_u8(nvs_handle, "gamepad_deadzone_100", &gpad_deadzone_100);
-    if (err == ESP_OK)
-    {
-        settings.gamepad_deadzone = (float)gpad_deadzone_100 / 100.0f;
-        ESP_LOGI(TAG, "✓ Loaded gamepad_deadzone from NVS: %.2f (raw: %d)", settings.gamepad_deadzone, gpad_deadzone_100);
-    }
-    else
-    {
-        settings.gamepad_deadzone = 0.05f;
-        ESP_LOGI(TAG, "⚠ Gamepad deadzone not found in NVS, using default: 0.05");
-    }
-
-    // Load gamepad invert_y
-    uint8_t gpad_invert_y = 0; // Default: natural (non-inverted)
-    err = nvs_get_u8(nvs_handle, "gamepad_invert_y", &gpad_invert_y);
-    if (err == ESP_OK)
-    {
-        settings.gamepad_invert_y = (gpad_invert_y != 0);
-        ESP_LOGI(TAG, "✓ Loaded gamepad_invert_y from NVS: %s", settings.gamepad_invert_y ? "true" : "false");
-    }
-    else
-    {
-        settings.gamepad_invert_y = false;
-        ESP_LOGI(TAG, "⚠ Gamepad invert_y not found in NVS, using default: false (natural)");
-    }
-
     // Load invert_mouse_y setting
     uint8_t invert_y = 0; // Default: natural (non-inverted)
     err = nvs_get_u8(nvs_handle, "invert_mouse_y", &invert_y);
@@ -1000,11 +1045,6 @@ bool USBHIDManager::loadSettings()
         settings.invert_mouse_y = false;
         ESP_LOGI(TAG, "⚠ Invert_mouse_y not found in NVS, using default: false (natural)");
     }
-
-    // Log current state for debugging
-    ESP_LOGI(TAG, "🎯 Current axis inversion settings: mouse_y=%s, gamepad_y=%s",
-             settings.invert_mouse_y ? "INVERTED" : "NORMAL",
-             settings.gamepad_invert_y ? "INVERTED" : "NORMAL");
 
     // Load mouse_enabled
     uint8_t mouse_en = 1; // Default: enabled
@@ -1064,10 +1104,71 @@ bool USBHIDManager::loadSettings()
 
     nvs_close(nvs_handle);
 
-    // Open gamepad namespace for gamepad spell mappings
+    // Open gamepad namespace for gamepad-specific settings
     err = nvs_open("gamepad", NVS_READONLY, &nvs_handle);
     if (err == ESP_OK)
     {
+        // Load gamepad sensitivity (stored as uint8_t: value * 10)
+        uint8_t gpad_sens_10x = 10; // Default 1.0x
+        err = nvs_get_u8(nvs_handle, "gamepad_sens_10x", &gpad_sens_10x);
+        if (err == ESP_OK)
+        {
+            settings.gamepad_sensitivity = (float)gpad_sens_10x / 10.0f;
+            ESP_LOGI(TAG, "✓ Loaded gamepad_sensitivity from NVS: %.2f (raw: %d)", settings.gamepad_sensitivity, gpad_sens_10x);
+        }
+        else
+        {
+            settings.gamepad_sensitivity = 1.0f;
+            ESP_LOGI(TAG, "⚠ Gamepad sensitivity not found in NVS, using default: 1.0");
+        }
+
+        // Load gamepad deadzone (stored as uint8_t: value * 100)
+        uint8_t gpad_deadzone_100 = 5; // Default 0.05
+        err = nvs_get_u8(nvs_handle, "gamepad_deadzone_100", &gpad_deadzone_100);
+        if (err == ESP_OK)
+        {
+            settings.gamepad_deadzone = (float)gpad_deadzone_100 / 100.0f;
+            ESP_LOGI(TAG, "✓ Loaded gamepad_deadzone from NVS: %.2f (raw: %d)", settings.gamepad_deadzone, gpad_deadzone_100);
+        }
+        else
+        {
+            settings.gamepad_deadzone = 0.05f;
+            ESP_LOGI(TAG, "⚠ Gamepad deadzone not found in NVS, using default: 0.05");
+        }
+
+        // Load gamepad invert_y
+        uint8_t gpad_invert_y = 0; // Default: natural (non-inverted)
+        err = nvs_get_u8(nvs_handle, "gamepad_invert_y", &gpad_invert_y);
+        if (err == ESP_OK)
+        {
+            settings.gamepad_invert_y = (gpad_invert_y != 0);
+            ESP_LOGI(TAG, "✓ Loaded gamepad_invert_y from NVS: %s", settings.gamepad_invert_y ? "true" : "false");
+        }
+        else
+        {
+            settings.gamepad_invert_y = false;
+            ESP_LOGI(TAG, "⚠ Gamepad invert_y not found in NVS, using default: false (natural)");
+        }
+
+        // Load gamepad stick mode
+        uint8_t stick_mode = 0; // Default: left stick
+        err = nvs_get_u8(nvs_handle, "gamepad_stick_mode", &stick_mode);
+        if (err == ESP_OK)
+        {
+            settings.gamepad_stick_mode = stick_mode;
+            ESP_LOGI(TAG, "✓ Loaded gamepad_stick_mode from NVS: %s", stick_mode == 0 ? "left" : "right");
+        }
+        else
+        {
+            settings.gamepad_stick_mode = 0;
+            ESP_LOGI(TAG, "⚠ Gamepad stick_mode not found in NVS, using default: 0 (left)");
+        }
+
+        // Log current state for debugging
+        ESP_LOGI(TAG, "🎯 Current axis inversion settings: mouse_y=%s, gamepad_y=%s",
+                 settings.invert_mouse_y ? "INVERTED" : "NORMAL",
+                 settings.gamepad_invert_y ? "INVERTED" : "NORMAL");
+
         // Load spell gamepad button mappings (73 spells)
         for (int i = 0; i < 73; i++)
         {
@@ -1077,6 +1178,15 @@ bool USBHIDManager::loadSettings()
             // If not found, spell_gamepad_buttons[i] remains 0 (disabled)
         }
         nvs_close(nvs_handle);
+    }
+    else
+    {
+        // If gamepad namespace doesn't exist, use defaults
+        settings.gamepad_sensitivity = 1.0f;
+        settings.gamepad_deadzone = 0.05f;
+        settings.gamepad_invert_y = false;
+        settings.gamepad_stick_mode = 0;
+        ESP_LOGW(TAG, "NVS namespace 'gamepad' not found, using defaults");
     }
 
     ESP_LOGI(TAG, "USB HID settings loaded from NVS");
@@ -1166,6 +1276,10 @@ bool USBHIDManager::saveSettings()
     // Save gamepad invert_y
     nvs_set_u8(nvs_handle, "gamepad_invert_y", settings.gamepad_invert_y ? 1 : 0);
     ESP_LOGI(TAG, "💾 Saved gamepad_invert_y to NVS: %s", settings.gamepad_invert_y ? "true" : "false");
+
+    // Save gamepad stick mode
+    nvs_set_u8(nvs_handle, "gamepad_stick_mode", settings.gamepad_stick_mode);
+    ESP_LOGI(TAG, "💾 Saved gamepad_stick_mode to NVS: %s", settings.gamepad_stick_mode == 0 ? "left" : "right");
 
     // Save spell gamepad button mappings (73 spells)
     ESP_LOGI(TAG, "Saving gamepad spell button mappings to NVS...");
@@ -1298,7 +1412,7 @@ void USBHIDManager::setSpellGamepadButton(const char *spell_name, uint8_t button
     if (!spell_name)
         return;
 
-    if (button > 10)
+    if (button > 20)
         button = 0;
 
     extern const char *SPELL_NAMES[73];
@@ -1333,20 +1447,97 @@ uint8_t USBHIDManager::getSpellGamepadButton(const char *spell_name) const
 void USBHIDManager::sendSpellGamepadForSpell(const char *spell_name)
 {
 #if USE_USB_HID_DEVICE
-    if (!spell_name || getHidMode() != HID_MODE_GAMEPAD)
+    if (!spell_name)
         return;
+
+    HIDMode mode = getHidMode();
+    if (mode != HID_MODE_GAMEPAD_ONLY)
+    {
+        ESP_LOGD(TAG, "Spell '%s': Skipping gamepad output (mode=%d, need GAMEPAD_ONLY=2)", spell_name, mode);
+        return;
+    }
 
     uint8_t button = getSpellGamepadButton(spell_name);
-    if (button == 0 || button > 14)
+    if (button == 0)
+    {
+        ESP_LOGD(TAG, "Spell '%s': No gamepad button mapped", spell_name);
         return;
+    }
 
-    uint16_t mask = (uint16_t)(1U << (button - 1));
-    uint16_t previous = gamepad_buttons;
-    gamepad_buttons = (previous | mask) & 0x3FFF;
-    sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, 0, 0, gamepad_buttons, 0x0F);
-    vTaskDelay(pdMS_TO_TICKS(50));
-    gamepad_buttons = previous & 0x3FFF;
-    sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, 0, 0, gamepad_buttons, 0x0F);
+    if (button > 20)
+    {
+        ESP_LOGW(TAG, "Spell '%s': Invalid gamepad button %d (max 20)", spell_name, button);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Spell '%s': Sending gamepad input %d", spell_name, button);
+
+    // Block position updates during spell gamepad input
+    in_spell_mode = true;
+
+    if (button <= 14)
+    {
+        // Buttons 1-14: Standard face/shoulder/menu/stick buttons
+        uint16_t mask = (uint16_t)(1U << (button - 1));
+        uint16_t previous = gamepad_buttons;
+        gamepad_buttons = (previous | mask) & 0x3FFF;
+        sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, gamepad_lt, gamepad_rt, gamepad_buttons, gamepad_hat);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        gamepad_buttons = previous & 0x3FFF;
+        sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, gamepad_lt, gamepad_rt, gamepad_buttons, gamepad_hat);
+    }
+    else if (button >= 15 && button <= 18)
+    {
+        // D-Pad (15=Up, 16=Down, 17=Left, 18=Right)
+        // HAT values: 0=Up, 1=UpRight, 2=Right, 3=DownRight, 4=Down, 5=DownLeft, 6=Left, 7=UpLeft, 8=Center(null)
+        uint8_t hat_value = 8; // Default centered
+        switch (button)
+        {
+        case 15:
+            hat_value = 0; // Up
+            break;
+        case 16:
+            hat_value = 4; // Down
+            break;
+        case 17:
+            hat_value = 6; // Left
+            break;
+        case 18:
+            hat_value = 2; // Right
+            break;
+        }
+        gamepad_hat = hat_value;
+        ESP_LOGI(TAG, "🎮 D-Pad: direction=%d, ready=%d", hat_value, tud_hid_ready());
+        // Send multiple times over 200ms to ensure Windows polls detect it
+        for (int i = 0; i < 4; i++)
+        {
+            sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, gamepad_lt, gamepad_rt, gamepad_buttons, gamepad_hat);
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        gamepad_hat = 8; // Release (center)
+        sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, gamepad_lt, gamepad_rt, gamepad_buttons, gamepad_hat);
+        ESP_LOGI(TAG, "🎮 D-Pad released");
+    }
+    else if (button == 19 || button == 20)
+    {
+        // Triggers (19=LT, 20=RT)
+        gamepad_lt = (button == 19) ? 255 : 0;
+        gamepad_rt = (button == 20) ? 255 : 0;
+        ESP_LOGI(TAG, "🎮 Trigger: LT=%d, RT=%d, ready=%d", gamepad_lt, gamepad_rt, tud_hid_ready());
+        // Send multiple times over 200ms to ensure Windows polls detect it
+        for (int i = 0; i < 4; i++)
+        {
+            sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, gamepad_lt, gamepad_rt, gamepad_buttons, gamepad_hat);
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        gamepad_lt = 0;
+        gamepad_rt = 0;
+        sendGamepadReport(gamepad_lx, gamepad_ly, gamepad_rx, gamepad_ry, gamepad_lt, gamepad_rt, gamepad_buttons, gamepad_hat); // Release
+        ESP_LOGI(TAG, "🎮 Trigger released");
+    }
+
+    // Re-enable position updates
+    in_spell_mode = false;
 #endif
 }
 

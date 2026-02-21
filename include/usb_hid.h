@@ -8,8 +8,9 @@ enum HIDMode : uint8_t
 {
     HID_MODE_MOUSE = 0,
     HID_MODE_KEYBOARD = 1,
-    HID_MODE_GAMEPAD = 2,
-    HID_MODE_DISABLED = 3
+    HID_MODE_GAMEPAD_ONLY = 2,  // Wand controls joystick, spells send gamepad buttons
+    HID_MODE_GAMEPAD_MIXED = 3, // Wand controls joystick, spells send keyboard keys
+    HID_MODE_DISABLED = 4
 };
 
 // USB HID Settings structure stored in NVS
@@ -24,7 +25,8 @@ struct USBHIDSettings
     float gamepad_sensitivity;         // Gamepad sensitivity multiplier (default 1.0)
     float gamepad_deadzone;            // Gamepad dead zone (0.0-0.5)
     bool gamepad_invert_y;             // Invert gamepad Y-axis
-    uint8_t spell_gamepad_buttons[73]; // Maps spell 0-72 to gamepad button (0=disabled, 1-10)
+    uint8_t gamepad_stick_mode;        // Gamepad stick selection (0=left, 1=right)
+    uint8_t spell_gamepad_buttons[73]; // Maps spell 0-72 to gamepad button (0=disabled, 1-20)
 };
 
 // USB HID Manager for Magic Caster Wand
@@ -95,6 +97,8 @@ public:
     float getGamepadSensitivity() const { return settings.gamepad_sensitivity; }
     float getGamepadDeadzone() const { return settings.gamepad_deadzone; }
     bool getGamepadInvertY() const { return settings.gamepad_invert_y; }
+    uint8_t getGamepadStickMode() const { return settings.gamepad_stick_mode; }
+    void setGamepadStickMode(uint8_t mode) { settings.gamepad_stick_mode = mode; }
     const USBHIDSettings &getSettings() const { return settings; }
     const uint8_t *getSpellKeycodes() const { return settings.spell_keycodes; }
     const uint8_t *getSpellGamepadButtons() const { return settings.spell_gamepad_buttons; }
@@ -118,6 +122,9 @@ private:
     int8_t gamepad_ly;
     int8_t gamepad_rx;
     int8_t gamepad_ry;
+    uint8_t gamepad_lt;  // Left trigger state (0-255)
+    uint8_t gamepad_rt;  // Right trigger state (0-255)
+    uint8_t gamepad_hat; // HAT switch state (0-7 directions, 8=center)
 
     // Smoothing for gamepad position
     float smoothed_lx;
