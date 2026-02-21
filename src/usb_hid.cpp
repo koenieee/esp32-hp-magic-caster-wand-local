@@ -1007,9 +1007,82 @@ uint8_t USBHIDManager::getSpellKeycode(const char *spell_name) const
     return 0;
 }
 
+// Clean up old individual NVS entries from pre-blob storage format
+// Before the blob refactor, each spell was stored as a separate key (spell_0, spell_1, etc.)
+// These orphaned entries waste NVS space and can cause ESP_ERR_NVS_NOT_ENOUGH_SPACE
+void USBHIDManager::cleanupOldNvsEntries()
+{
+    // Clean up old individual spell entries from "usb_hid" namespace
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("usb_hid", NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK)
+    {
+        int cleaned = 0;
+        char key[16];
+        for (int i = 0; i < 73; i++)
+        {
+            snprintf(key, sizeof(key), "spell_%d", i);
+            uint8_t dummy;
+            if (nvs_get_u8(nvs_handle, key, &dummy) == ESP_OK)
+            {
+                nvs_erase_key(nvs_handle, key);
+                cleaned++;
+            }
+        }
+        if (cleaned > 0)
+        {
+            nvs_commit(nvs_handle);
+            ESP_LOGI(TAG, "🧹 Cleaned up %d old individual spell entries from 'usb_hid' namespace", cleaned);
+        }
+        nvs_close(nvs_handle);
+    }
+
+    // Clean up old individual gamepad spell entries from "gamepad" namespace
+    err = nvs_open("gamepad", NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK)
+    {
+        int cleaned = 0;
+        char key[16];
+        for (int i = 0; i < 73; i++)
+        {
+            snprintf(key, sizeof(key), "gpad_%d", i);
+            uint8_t dummy;
+            if (nvs_get_u8(nvs_handle, key, &dummy) == ESP_OK)
+            {
+                nvs_erase_key(nvs_handle, key);
+                cleaned++;
+            }
+        }
+        if (cleaned > 0)
+        {
+            nvs_commit(nvs_handle);
+            ESP_LOGI(TAG, "🧹 Cleaned up %d old individual gamepad spell entries from 'gamepad' namespace", cleaned);
+        }
+        nvs_close(nvs_handle);
+    }
+}
+
 bool USBHIDManager::loadSettings()
 {
+    // ⚠️ CRITICAL: ESP-IDF NVS keys have a MAXIMUM length of 15 characters!
+    // ⚠️ Key names here MUST match those in saveSettings() exactly.
+    // ⚠️ Current keys: kbd_enabled(11), gpad_sens(9), gpad_dz(7), gpad_inv_y(11), gpad_stick(10)
+
     ESP_LOGI(TAG, "📂 Loading settings from NVS...");
+
+    // Log NVS partition statistics on load
+    nvs_stats_t nvs_stats;
+    esp_err_t stats_err = nvs_get_stats("nvs", &nvs_stats);
+    if (stats_err == ESP_OK)
+    {
+        ESP_LOGI(TAG, "📊 NVS stats at boot: used=%zu, free=%zu, total=%zu, ns_count=%zu",
+                 nvs_stats.used_entries, nvs_stats.free_entries, nvs_stats.total_entries, nvs_stats.namespace_count);
+    }
+
+    // Clean up old individual spell entries (from pre-blob storage format)
+    // These entries waste NVS space and can cause NVS_NOT_ENOUGH_SPACE errors
+    cleanupOldNvsEntries();
+
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("usb_hid", NVS_READONLY, &nvs_handle);
     if (err != ESP_OK)
@@ -1053,7 +1126,7 @@ bool USBHIDManager::loadSettings()
 
     // Load keyboard_enabled
     uint8_t keyboard_en = 1; // Default: enabled
-    err = nvs_get_u8(nvs_handle, "keyboard_enabled", &keyboard_en);
+    err = nvs_get_u8(nvs_handle, "kbd_enabled", &keyboard_en);
     settings.keyboard_enabled = (keyboard_en != 0);
 
     // Load HID mode
@@ -1080,27 +1153,26 @@ bool USBHIDManager::loadSettings()
     }
     setHidMode(static_cast<HIDMode>(hid_mode));
 
-    // Load spell keycodes (73 spells)
+    // Load spell keycodes (73 spells) - blob storage
     ESP_LOGI(TAG, "Loading spell keycodes from NVS...");
-    int non_zero_count = 0;
-    for (int i = 0; i < 73; i++)
+    size_t blob_size = 73;
+    err = nvs_get_blob(nvs_handle, "spell_keycodes", settings.spell_keycodes, &blob_size);
+    if (err == ESP_OK && blob_size == 73)
     {
-        char key[16];
-        snprintf(key, sizeof(key), "spell%d", i);
-        uint8_t old_value = settings.spell_keycodes[i];
-        nvs_get_u8(nvs_handle, key, &settings.spell_keycodes[i]);
-        if (settings.spell_keycodes[i] != 0)
+        int non_zero_count = 0;
+        for (int i = 0; i < 73; i++)
         {
-            non_zero_count++;
-            if (settings.spell_keycodes[i] != old_value)
+            if (settings.spell_keycodes[i] != 0)
             {
-                extern const char *SPELL_NAMES[73];
-                ESP_LOGI(TAG, "  Spell[%d]='%s' loaded: 0x%02X (%d)",
-                         i, SPELL_NAMES[i], settings.spell_keycodes[i], settings.spell_keycodes[i]);
+                non_zero_count++;
             }
         }
+        ESP_LOGI(TAG, "Loaded %d non-zero spell mappings", non_zero_count);
     }
-    ESP_LOGI(TAG, "Loaded %d non-zero spell mappings", non_zero_count);
+    else
+    {
+        ESP_LOGW(TAG, "Spell keycodes blob not found in NVS");
+    }
 
     nvs_close(nvs_handle);
 
@@ -1110,7 +1182,7 @@ bool USBHIDManager::loadSettings()
     {
         // Load gamepad sensitivity (stored as uint8_t: value * 10)
         uint8_t gpad_sens_10x = 10; // Default 1.0x
-        err = nvs_get_u8(nvs_handle, "gamepad_sens_10x", &gpad_sens_10x);
+        err = nvs_get_u8(nvs_handle, "gpad_sens", &gpad_sens_10x);
         if (err == ESP_OK)
         {
             settings.gamepad_sensitivity = (float)gpad_sens_10x / 10.0f;
@@ -1124,7 +1196,7 @@ bool USBHIDManager::loadSettings()
 
         // Load gamepad deadzone (stored as uint8_t: value * 100)
         uint8_t gpad_deadzone_100 = 5; // Default 0.05
-        err = nvs_get_u8(nvs_handle, "gamepad_deadzone_100", &gpad_deadzone_100);
+        err = nvs_get_u8(nvs_handle, "gpad_dz", &gpad_deadzone_100);
         if (err == ESP_OK)
         {
             settings.gamepad_deadzone = (float)gpad_deadzone_100 / 100.0f;
@@ -1138,7 +1210,7 @@ bool USBHIDManager::loadSettings()
 
         // Load gamepad invert_y
         uint8_t gpad_invert_y = 0; // Default: natural (non-inverted)
-        err = nvs_get_u8(nvs_handle, "gamepad_invert_y", &gpad_invert_y);
+        err = nvs_get_u8(nvs_handle, "gpad_inv_y", &gpad_invert_y);
         if (err == ESP_OK)
         {
             settings.gamepad_invert_y = (gpad_invert_y != 0);
@@ -1152,7 +1224,7 @@ bool USBHIDManager::loadSettings()
 
         // Load gamepad stick mode
         uint8_t stick_mode = 0; // Default: left stick
-        err = nvs_get_u8(nvs_handle, "gamepad_stick_mode", &stick_mode);
+        err = nvs_get_u8(nvs_handle, "gpad_stick", &stick_mode);
         if (err == ESP_OK)
         {
             settings.gamepad_stick_mode = stick_mode;
@@ -1169,13 +1241,16 @@ bool USBHIDManager::loadSettings()
                  settings.invert_mouse_y ? "INVERTED" : "NORMAL",
                  settings.gamepad_invert_y ? "INVERTED" : "NORMAL");
 
-        // Load spell gamepad button mappings (73 spells)
-        for (int i = 0; i < 73; i++)
+        // Load spell gamepad button mappings (73 spells) - blob storage
+        size_t gpad_blob_size = 73;
+        err = nvs_get_blob(nvs_handle, "gpad_spells", settings.spell_gamepad_buttons, &gpad_blob_size);
+        if (err == ESP_OK && gpad_blob_size == 73)
         {
-            char key[20];
-            snprintf(key, sizeof(key), "gpad_spell%d", i);
-            nvs_get_u8(nvs_handle, key, &settings.spell_gamepad_buttons[i]);
-            // If not found, spell_gamepad_buttons[i] remains 0 (disabled)
+            ESP_LOGI(TAG, "✓ Loaded gamepad spell button mappings");
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Gamepad spell mappings blob not found in NVS");
         }
         nvs_close(nvs_handle);
     }
@@ -1189,66 +1264,109 @@ bool USBHIDManager::loadSettings()
         ESP_LOGW(TAG, "NVS namespace 'gamepad' not found, using defaults");
     }
 
-    ESP_LOGI(TAG, "USB HID settings loaded from NVS");
+    ESP_LOGI(TAG, "✅ USB HID settings loaded from NVS");
+    ESP_LOGI(TAG, "📊 Final loaded gamepad settings: sens=%.2f, deadzone=%.2f, invert_y=%s, stick_mode=%u (%s)",
+             settings.gamepad_sensitivity, settings.gamepad_deadzone,
+             settings.gamepad_invert_y ? "true" : "false",
+             settings.gamepad_stick_mode, settings.gamepad_stick_mode == 0 ? "left" : "right");
     return true;
 }
 
 bool USBHIDManager::saveSettings()
 {
+    // ⚠️ CRITICAL: ESP-IDF NVS keys have a MAXIMUM length of 15 characters!
+    // ⚠️ Exceeding this limit causes ESP_ERR_NVS_KEY_TOO_LONG errors.
+    // ⚠️ Always use abbreviated key names (e.g., "gpad_sens" not "gamepad_sensitivity").
+    // ⚠️ Current keys: kbd_enabled(11), gpad_sens(9), gpad_dz(7), gpad_inv_y(11), gpad_stick(10)
+
     ESP_LOGI(TAG, "🔍 saveSettings() called - checking current settings struct values:");
-    ESP_LOGI(TAG, "   gamepad_sensitivity=%.2f, gamepad_deadzone=%.2f, gamepad_invert_y=%s",
-             settings.gamepad_sensitivity, settings.gamepad_deadzone, settings.gamepad_invert_y ? "true" : "false");
+    ESP_LOGI(TAG, "   gamepad_sensitivity=%.2f, gamepad_deadzone=%.2f, gamepad_invert_y=%s, gamepad_stick_mode=%u",
+             settings.gamepad_sensitivity, settings.gamepad_deadzone, settings.gamepad_invert_y ? "true" : "false", settings.gamepad_stick_mode);
     ESP_LOGI(TAG, "   mouse_sensitivity=%.2f, invert_mouse_y=%s",
              settings.mouse_sensitivity, settings.invert_mouse_y ? "true" : "false");
+
+    // Track if ANY save operation fails
+    bool any_errors = false;
+
+    // Log NVS partition statistics
+    nvs_stats_t nvs_stats;
+    esp_err_t stats_err = nvs_get_stats("nvs", &nvs_stats);
+    if (stats_err == ESP_OK)
+    {
+        ESP_LOGI(TAG, "📊 NVS stats: used=%zu, free=%zu, total=%zu, ns_count=%zu",
+                 nvs_stats.used_entries, nvs_stats.free_entries, nvs_stats.total_entries, nvs_stats.namespace_count);
+        if (nvs_stats.free_entries < 10)
+        {
+            ESP_LOGW(TAG, "⚠️ NVS partition is nearly full! Only %zu entries free", nvs_stats.free_entries);
+        }
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Could not get NVS stats: %s", esp_err_to_name(stats_err));
+    }
 
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("usb_hid", NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "Failed to open NVS namespace 'usb_hid'");
+        ESP_LOGE(TAG, "❌ Failed to open NVS namespace 'usb_hid': %s", esp_err_to_name(err));
         return false;
     }
 
     // Save mouse sensitivity (as 10x value to store as uint8)
     uint8_t sens_10x = (uint8_t)(settings.mouse_sensitivity * 10.0f);
-    nvs_set_u8(nvs_handle, "mouse_sens_10x", sens_10x);
+    err = nvs_set_u8(nvs_handle, "mouse_sens_10x", sens_10x);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "❌ nvs_set_u8 mouse_sens_10x failed: %s", esp_err_to_name(err));
+        any_errors = true;
+    }
 
     // Save invert_mouse_y setting
-    nvs_set_u8(nvs_handle, "invert_mouse_y", settings.invert_mouse_y ? 1 : 0);
-    ESP_LOGI(TAG, "💾 Saved invert_mouse_y to NVS: %s", settings.invert_mouse_y ? "true" : "false");
+    err = nvs_set_u8(nvs_handle, "invert_mouse_y", settings.invert_mouse_y ? 1 : 0);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "❌ nvs_set_u8 invert_mouse_y failed: %s", esp_err_to_name(err));
+        any_errors = true;
+    }
 
     // Save mouse_enabled
-    nvs_set_u8(nvs_handle, "mouse_enabled", settings.mouse_enabled ? 1 : 0);
+    err = nvs_set_u8(nvs_handle, "mouse_enabled", settings.mouse_enabled ? 1 : 0);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "❌ nvs_set_u8 mouse_enabled failed: %s", esp_err_to_name(err));
+        any_errors = true;
+    }
 
-    // Save keyboard_enabled
-    nvs_set_u8(nvs_handle, "keyboard_enabled", settings.keyboard_enabled ? 1 : 0);
+    // Save keyboard_enabled (key shortened to fit 15-char NVS limit)
+    err = nvs_set_u8(nvs_handle, "kbd_enabled", settings.keyboard_enabled ? 1 : 0);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "❌ nvs_set_u8 kbd_enabled failed: %s", esp_err_to_name(err));
+        any_errors = true;
+    }
 
     // Save HID mode
-    nvs_set_u8(nvs_handle, "hid_mode", settings.hid_mode);
-
-    // Save spell keycodes (73 spells)
-    ESP_LOGI(TAG, "Saving spell keycodes to NVS...");
-    int saved_count = 0;
-    for (int i = 0; i < 73; i++)
+    err = nvs_set_u8(nvs_handle, "hid_mode", settings.hid_mode);
+    if (err != ESP_OK)
     {
-        char key[16];
-        if (settings.spell_keycodes[i] != 0)
-        {
-            extern const char *SPELL_NAMES[73];
-            ESP_LOGI(TAG, "  Saving spell[%d]='%s' = 0x%02X (%d)",
-                     i, SPELL_NAMES[i], settings.spell_keycodes[i], settings.spell_keycodes[i]);
-            saved_count++;
-        }
-        snprintf(key, sizeof(key), "spell%d", i);
-        nvs_set_u8(nvs_handle, key, settings.spell_keycodes[i]);
+        ESP_LOGE(TAG, "❌ nvs_set_u8 hid_mode failed: %s", esp_err_to_name(err));
+        any_errors = true;
     }
-    ESP_LOGI(TAG, "Saved %d non-zero spell mappings to NVS", saved_count);
+
+    // Save spell keycodes (73 spells) - blob storage
+    err = nvs_set_blob(nvs_handle, "spell_keycodes", settings.spell_keycodes, 73);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "❌ nvs_set_blob spell_keycodes failed: %s", esp_err_to_name(err));
+        any_errors = true;
+    }
 
     // Commit usb_hid namespace
     err = nvs_commit(nvs_handle);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "Failed to commit usb_hid NVS settings");
+        ESP_LOGE(TAG, "❌ Failed to commit usb_hid NVS settings: %s", esp_err_to_name(err));
         nvs_close(nvs_handle);
         return false;
     }
@@ -1259,42 +1377,73 @@ bool USBHIDManager::saveSettings()
     err = nvs_open("gamepad", NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "Failed to open NVS namespace 'gamepad'");
+        ESP_LOGE(TAG, "❌ Failed to open NVS namespace 'gamepad': %s", esp_err_to_name(err));
         return false;
     }
 
-    // Save gamepad sensitivity (as 10x value to store as uint8)
+    // Save gamepad sensitivity (as 10x value to store as uint8, key shortened to fit 15-char NVS limit)
     uint8_t gpad_sens_10x = (uint8_t)(settings.gamepad_sensitivity * 10.0f);
-    nvs_set_u8(nvs_handle, "gamepad_sens_10x", gpad_sens_10x);
-    ESP_LOGI(TAG, "💾 Saved gamepad_sensitivity to NVS: %.2f (raw: %d)", settings.gamepad_sensitivity, gpad_sens_10x);
-
-    // Save gamepad deadzone (as 100x value to store as uint8)
-    uint8_t gpad_deadzone_100 = (uint8_t)(settings.gamepad_deadzone * 100.0f);
-    nvs_set_u8(nvs_handle, "gamepad_deadzone_100", gpad_deadzone_100);
-    ESP_LOGI(TAG, "💾 Saved gamepad_deadzone to NVS: %.2f (raw: %d)", settings.gamepad_deadzone, gpad_deadzone_100);
-
-    // Save gamepad invert_y
-    nvs_set_u8(nvs_handle, "gamepad_invert_y", settings.gamepad_invert_y ? 1 : 0);
-    ESP_LOGI(TAG, "💾 Saved gamepad_invert_y to NVS: %s", settings.gamepad_invert_y ? "true" : "false");
-
-    // Save gamepad stick mode
-    nvs_set_u8(nvs_handle, "gamepad_stick_mode", settings.gamepad_stick_mode);
-    ESP_LOGI(TAG, "💾 Saved gamepad_stick_mode to NVS: %s", settings.gamepad_stick_mode == 0 ? "left" : "right");
-
-    // Save spell gamepad button mappings (73 spells)
-    ESP_LOGI(TAG, "Saving gamepad spell button mappings to NVS...");
-    for (int i = 0; i < 73; i++)
+    err = nvs_set_u8(nvs_handle, "gpad_sens", gpad_sens_10x);
+    if (err != ESP_OK)
     {
-        char key[20];
-        snprintf(key, sizeof(key), "gpad_spell%d", i);
-        nvs_set_u8(nvs_handle, key, settings.spell_gamepad_buttons[i]);
+        ESP_LOGE(TAG, "❌ nvs_set_u8 gpad_sens FAILED: %s (value=%d)", esp_err_to_name(err), gpad_sens_10x);
+        any_errors = true;
+    }
+    else
+    {
+        ESP_LOGI(TAG, "💾 Saved gamepad_sensitivity to NVS: %.2f (raw: %d)", settings.gamepad_sensitivity, gpad_sens_10x);
+    }
+
+    // Save gamepad deadzone (as 100x value to store as uint8, key shortened to fit 15-char NVS limit)
+    uint8_t gpad_deadzone_100 = (uint8_t)(settings.gamepad_deadzone * 100.0f);
+    err = nvs_set_u8(nvs_handle, "gpad_dz", gpad_deadzone_100);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "❌ nvs_set_u8 gpad_dz FAILED: %s", esp_err_to_name(err));
+        any_errors = true;
+    }
+    else
+    {
+        ESP_LOGI(TAG, "💾 Saved gamepad_deadzone to NVS: %.2f (raw: %d)", settings.gamepad_deadzone, gpad_deadzone_100);
+    }
+
+    // Save gamepad invert_y (key shortened to fit 15-char NVS limit)
+    err = nvs_set_u8(nvs_handle, "gpad_inv_y", settings.gamepad_invert_y ? 1 : 0);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "❌ nvs_set_u8 gpad_inv_y FAILED: %s", esp_err_to_name(err));
+        any_errors = true;
+    }
+    else
+    {
+        ESP_LOGI(TAG, "💾 Saved gamepad_invert_y to NVS: %s", settings.gamepad_invert_y ? "true" : "false");
+    }
+
+    // Save gamepad stick mode (key shortened to fit 15-char NVS limit)
+    err = nvs_set_u8(nvs_handle, "gpad_stick", settings.gamepad_stick_mode);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "❌ nvs_set_u8 gpad_stick FAILED: %s (value=%d)", esp_err_to_name(err), settings.gamepad_stick_mode);
+        any_errors = true;
+    }
+    else
+    {
+        ESP_LOGI(TAG, "💾 Saved gamepad_stick_mode to NVS: %s", settings.gamepad_stick_mode == 0 ? "left" : "right");
+    }
+
+    // Save spell gamepad button mappings (73 spells) - blob storage
+    err = nvs_set_blob(nvs_handle, "gpad_spells", settings.spell_gamepad_buttons, 73);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "❌ nvs_set_blob gpad_spells FAILED: %s", esp_err_to_name(err));
+        any_errors = true;
     }
 
     // Commit gamepad namespace
     err = nvs_commit(nvs_handle);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "Failed to commit gamepad NVS settings");
+        ESP_LOGE(TAG, "❌ Failed to commit gamepad NVS settings: %s", esp_err_to_name(err));
         nvs_close(nvs_handle);
         return false;
     }
@@ -1303,13 +1452,22 @@ bool USBHIDManager::saveSettings()
     uint8_t verify_gpad_sens = 0;
     uint8_t verify_gpad_deadzone = 0;
     uint8_t verify_gpad_invert = 0;
-    nvs_get_u8(nvs_handle, "gamepad_sens_10x", &verify_gpad_sens);
-    nvs_get_u8(nvs_handle, "gamepad_deadzone_100", &verify_gpad_deadzone);
-    nvs_get_u8(nvs_handle, "gamepad_invert_y", &verify_gpad_invert);
-    ESP_LOGI(TAG, "✅ Verified gamepad NVS write: sens=%d (%.1fx), deadzone=%d (%.2f), invert=%d",
-             verify_gpad_sens, verify_gpad_sens / 10.0f, verify_gpad_deadzone, verify_gpad_deadzone / 100.0f, verify_gpad_invert);
+    uint8_t verify_gpad_stick = 0;
+    nvs_get_u8(nvs_handle, "gpad_sens", &verify_gpad_sens);
+    nvs_get_u8(nvs_handle, "gpad_dz", &verify_gpad_deadzone);
+    nvs_get_u8(nvs_handle, "gpad_inv_y", &verify_gpad_invert);
+    nvs_get_u8(nvs_handle, "gpad_stick", &verify_gpad_stick);
+    ESP_LOGI(TAG, "✅ Verified gamepad NVS write: sens=%d (%.1fx), deadzone=%d (%.2f), invert=%d, stick_mode=%d (%s)",
+             verify_gpad_sens, verify_gpad_sens / 10.0f, verify_gpad_deadzone, verify_gpad_deadzone / 100.0f,
+             verify_gpad_invert, verify_gpad_stick, verify_gpad_stick == 0 ? "left" : "right");
 
     nvs_close(nvs_handle);
+
+    if (any_errors)
+    {
+        ESP_LOGE(TAG, "❌ Some settings failed to save to NVS - check errors above");
+        return false;
+    }
 
     ESP_LOGI(TAG, "✅ All USB HID settings saved to NVS");
     return true;
@@ -1383,6 +1541,15 @@ void USBHIDManager::setGamepadDeadzoneValue(float deadzone)
 
     settings.gamepad_deadzone = deadzone;
     ESP_LOGI(TAG, "Gamepad dead zone set to %.2f", deadzone);
+}
+
+void USBHIDManager::setGamepadStickMode(uint8_t mode)
+{
+    if (mode > 1)
+        mode = 0; // Default to left stick if invalid
+
+    settings.gamepad_stick_mode = mode;
+    ESP_LOGI(TAG, "🎮 Gamepad stick mode set to %s (will be saved on settings save)", mode == 0 ? "left" : "right");
 }
 
 void USBHIDManager::setInvertMouseY(bool invert)
@@ -1562,7 +1729,9 @@ void USBHIDManager::setGamepadButtons(uint16_t buttons) {}
 void USBHIDManager::setHidMode(HIDMode mode) {}
 void USBHIDManager::setGamepadSensitivityValue(float sensitivity) {}
 void USBHIDManager::setGamepadDeadzoneValue(float deadzone) {}
+void USBHIDManager::setGamepadStickMode(uint8_t mode) {}
 void USBHIDManager::setSpellGamepadButton(const char *spell_name, uint8_t button) {}
 uint8_t USBHIDManager::getSpellGamepadButton(const char *spell_name) const { return 0; }
 void USBHIDManager::sendSpellGamepadForSpell(const char *spell_name) {}
+void USBHIDManager::cleanupOldNvsEntries() {}
 #endif // USE_USB_HID_DEVICE

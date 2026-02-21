@@ -98,7 +98,7 @@ public:
     float getGamepadDeadzone() const { return settings.gamepad_deadzone; }
     bool getGamepadInvertY() const { return settings.gamepad_invert_y; }
     uint8_t getGamepadStickMode() const { return settings.gamepad_stick_mode; }
-    void setGamepadStickMode(uint8_t mode) { settings.gamepad_stick_mode = mode; }
+    void setGamepadStickMode(uint8_t mode);
     const USBHIDSettings &getSettings() const { return settings; }
     const uint8_t *getSpellKeycodes() const { return settings.spell_keycodes; }
     const uint8_t *getSpellGamepadButtons() const { return settings.spell_gamepad_buttons; }
@@ -136,4 +136,5 @@ private:
     void sendKeyboardReport(uint8_t modifiers, uint8_t keycode);
     void sendGamepadReport(int8_t lx, int8_t ly, int8_t rx, int8_t ry, uint8_t lt, uint8_t rt, uint16_t buttons, uint8_t hat);
     uint8_t getKeycodeForSpell(const char *spell_name);
+    void cleanupOldNvsEntries(); // Remove orphaned individual spell NVS entries
 };

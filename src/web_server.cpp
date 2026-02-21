@@ -3311,13 +3311,24 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     buffer[content_len] = 0;
     ESP_LOGI(TAG, "Received settings: %s", buffer);
 
-    // Parse JSON - expect format: {"mouse_sensitivity": 1.5, "spells": [0, 58, 0, ...]}
+    // ⚠️ CRITICAL PARSING NOTE - DO NOT CHANGE WITHOUT READING ⚠️
+    // JavaScript JSON.stringify() sends COMPACT JSON with NO SPACES around colons/commas
+    // Example: {"gamepad_sensitivity":3.8,"gamepad_stick_mode":1}
+    //
+    // All sscanf() format strings MUST match this compact format:
+    //   ✅ CORRECT:   sscanf(ptr, "\"key\":%f", &value)
+    //   ❌ WRONG:     sscanf(ptr, "\"key\" : %f", &value)  // This will FAIL silently!
+    //
+    // If sscanf fails, it keeps the default value but logs still show success,
+    // making debugging extremely difficult. Always test parsing changes!
+    // ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️
 #if USE_USB_HID_DEVICE
+    ESP_LOGI(TAG, "✅ USE_USB_HID_DEVICE is enabled, starting USB HID settings parse");
     float mouse_sens = 1.0f;
     char *mouse_ptr = strstr(buffer, "\"mouse_sensitivity\"");
     if (mouse_ptr)
     {
-        sscanf(mouse_ptr, "\"mouse_sensitivity\" : %f", &mouse_sens);
+        sscanf(mouse_ptr, "\"mouse_sensitivity\":%f", &mouse_sens);
         usbHID.setMouseSensitivityValue(mouse_sens);
     }
 
@@ -3349,7 +3360,7 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     if (hid_mode_ptr)
     {
         int hid_mode = HID_MODE_MOUSE;
-        sscanf(hid_mode_ptr, "\"hid_mode\" : %d", &hid_mode);
+        sscanf(hid_mode_ptr, "\"hid_mode\":%d", &hid_mode);
         usbHID.setHidMode(static_cast<HIDMode>(hid_mode));
     }
 
@@ -3358,7 +3369,7 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     if (gpad_sens_ptr)
     {
         float gpad_sens = 1.0f;
-        sscanf(gpad_sens_ptr, "\"gamepad_sensitivity\" : %f", &gpad_sens);
+        sscanf(gpad_sens_ptr, "\"gamepad_sensitivity\":%f", &gpad_sens);
         ESP_LOGI(TAG, "📝 Parsed gamepad_sensitivity: %.2f", gpad_sens);
         usbHID.setGamepadSensitivityValue(gpad_sens);
     }
@@ -3368,7 +3379,7 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     if (gpad_deadzone_ptr)
     {
         float gpad_deadzone = 0.05f;
-        sscanf(gpad_deadzone_ptr, "\"gamepad_deadzone\" : %f", &gpad_deadzone);
+        sscanf(gpad_deadzone_ptr, "\"gamepad_deadzone\":%f", &gpad_deadzone);
         ESP_LOGI(TAG, "📝 Parsed gamepad_deadzone: %.2f", gpad_deadzone);
         usbHID.setGamepadDeadzoneValue(gpad_deadzone);
     }
@@ -3399,9 +3410,10 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     if (gpad_stick_ptr)
     {
         int stick_mode = 0;
-        sscanf(gpad_stick_ptr, "\"gamepad_stick_mode\" : %d", &stick_mode);
+        sscanf(gpad_stick_ptr, "\"gamepad_stick_mode\":%d", &stick_mode);
         ESP_LOGI(TAG, "📝 Parsed gamepad_stick_mode: %d (%s)", stick_mode, stick_mode == 0 ? "left" : "right");
         usbHID.setGamepadStickMode((uint8_t)stick_mode);
+        ESP_LOGI(TAG, "✅ Called setGamepadStickMode(%s)", stick_mode == 0 ? "left" : "right");
     }
 
     // Parse HA MQTT enabled
@@ -3604,14 +3616,17 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
             }
         }
     }
-#endif
 
+    ESP_LOGI(TAG, "🔍 Reached end of parsing, about to save settings...");
     ESP_LOGI(TAG, "Settings save complete. MQTT settings saved to NVS (reboot required to apply)");
 
     // Save to NVS
-#if USE_USB_HID_DEVICE
-    if (usbHID.saveSettings())
+    ESP_LOGI(TAG, "🔄 About to call usbHID.saveSettings()...");
+    esp_err_t save_result = usbHID.saveSettings();
+    ESP_LOGI(TAG, "saveSettings() returned: %d", save_result ? 1 : 0);
+    if (save_result)
     {
+        ESP_LOGI(TAG, "✅ usbHID.saveSettings() returned true - NVS save successful");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"status\":\"success\",\"message\":\"Settings saved\"}");
         free(buffer);
@@ -3619,6 +3634,7 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     }
     else
     {
+        ESP_LOGI(TAG, "❌ usbHID.saveSettings() returned false - NVS save failed!");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Failed to save to NVS\"}");
         free(buffer);

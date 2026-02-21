@@ -1035,13 +1035,13 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
             // Re-enable mouse movement after spell tracking
 #if USE_USB_HID_DEVICE
             usbHID.setInSpellMode(false);
-            // Start 2-second cooldown before recentering (user returns to rest position)
+            // Start 0.5-second cooldown before recentering (user returns to rest position)
             HIDMode hid_mode = usbHID.getHidMode();
             if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED)
             {
                 g_post_spell_cooldown_active = true;
                 g_post_spell_cooldown_start_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-                ESP_LOGI(TAG, "🎯 Post-spell cooldown: waiting 2s before recenter");
+                ESP_LOGI(TAG, "🎯 Post-spell cooldown: waiting 0.5s before recenter");
             }
 #endif
 
@@ -1204,7 +1204,7 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                             uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
                             uint32_t elapsed_ms = now_ms - g_post_spell_cooldown_start_ms;
 
-                            if (elapsed_ms >= 2000)
+                            if (elapsed_ms >= 500)
                             {
                                 // Cooldown expired: recenter and resume normal operation
                                 ahrsTracker.resetGamepadReference();

@@ -375,12 +375,20 @@ extern "C" void app_main()
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
     {
-        ESP_LOGW(TAG, "NVS partition was truncated, erasing...");
+        ESP_LOGW(TAG, "⚠️ NVS partition was truncated/version mismatch, erasing ALL NVS data...");
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
     ESP_LOGI(TAG, "✓ NVS initialized");
+
+    // Log NVS partition statistics
+    nvs_stats_t nvs_stats;
+    if (nvs_get_stats("nvs", &nvs_stats) == ESP_OK)
+    {
+        ESP_LOGI(TAG, "📊 NVS partition: used=%zu, free=%zu, total=%zu, namespaces=%zu",
+                 nvs_stats.used_entries, nvs_stats.free_entries, nvs_stats.total_entries, nvs_stats.namespace_count);
+    }
 
     // Read stored wand MAC address from NVS
     char stored_mac[18] = {0};
@@ -964,6 +972,10 @@ extern "C" void app_main()
 #endif
 
 #if USE_USB_HID_DEVICE
+    // Wait before initializing USB HID to avoid bootloader conflicts
+    ESP_LOGI(TAG, "⏳ Waiting 30 seconds before USB HID initialization...");
+    vTaskDelay(pdMS_TO_TICKS(30000));
+
     // Initialize USB HID
     ESP_LOGI(TAG, "Initializing USB HID...");
     if (usbHID.begin())
