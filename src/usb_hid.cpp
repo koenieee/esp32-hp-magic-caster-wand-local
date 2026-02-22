@@ -377,10 +377,8 @@ USBHIDManager::USBHIDManager()
       smoothed_mouse_x(0.0f),
       smoothed_mouse_y(0.0f),
       mouse_smoothing_initialized(false),
-      prev_vel_x(0.0f),
-      prev_vel_y(0.0f),
-      predicted_x(0.0f),
-      predicted_y(0.0f),
+      mouse_timer_handle(nullptr),
+      mouse_timer_running(false),
       accumulated_x(0.0f),
       accumulated_y(0.0f)
 {
@@ -404,6 +402,7 @@ USBHIDManager::USBHIDManager()
 
 USBHIDManager::~USBHIDManager()
 {
+    stopMouseTimer();
 }
 
 bool USBHIDManager::begin()
@@ -455,6 +454,9 @@ bool USBHIDManager::begin()
              settings.gamepad_sensitivity, settings.gamepad_deadzone, settings.gamepad_invert_y ? "true" : "false");
     ESP_LOGI(TAG, "   HID mode=%u, mouse_enabled=%d, keyboard_enabled=%d",
              settings.hid_mode, settings.mouse_enabled, settings.keyboard_enabled);
+
+    // Start 1kHz mouse timer for smooth USB report sending
+    startMouseTimer();
 
     ESP_LOGI(TAG, "USB HID initialized successfully");
     return true;
@@ -529,7 +531,6 @@ void USBHIDManager::updateMouseFromPosition(float pos_x, float pos_y)
 
     // Velocity-based mouse: position = cursor velocity
     // Position range: ~[-300, +300] from AHRS Euler angles
-    // Increased scale for responsive speed; smoothing prevents jumps
     constexpr float BASE_SCALE = 0.017f;
     float scale = BASE_SCALE * mouse_sensitivity;
 
@@ -539,13 +540,12 @@ void USBHIDManager::updateMouseFromPosition(float pos_x, float pos_y)
         pos_y = -pos_y;
     }
 
-    // Scale position to velocity (pixels per frame)
+    // Scale position to velocity (pixels per BLE frame at ~240Hz)
     float vel_x = pos_x * scale;
     float vel_y = pos_y * scale;
 
-    // Stronger smoothing prevents sudden velocity changes (= prevents jumps!)
+    // Exponential smoothing: prevents sudden velocity changes (= prevents jumps!)
     // Alpha = 0.35: velocity changes gradually, never spikes
-    // This is the KEY anti-jump mechanism: smooth velocity = smooth cursor
     constexpr float SMOOTHING_ALPHA = 0.35f;
 
     if (!mouse_smoothing_initialized)
@@ -560,33 +560,113 @@ void USBHIDManager::updateMouseFromPosition(float pos_x, float pos_y)
         smoothed_mouse_y = SMOOTHING_ALPHA * vel_y + (1.0f - SMOOTHING_ALPHA) * smoothed_mouse_y;
     }
 
-    // Clamp smoothed velocity to valid HID range (±127) before converting
-    if (smoothed_mouse_x > 127.0f)
-        smoothed_mouse_x = 127.0f;
-    if (smoothed_mouse_x < -127.0f)
-        smoothed_mouse_x = -127.0f;
-    if (smoothed_mouse_y > 127.0f)
-        smoothed_mouse_y = 127.0f;
-    if (smoothed_mouse_y < -127.0f)
-        smoothed_mouse_y = -127.0f;
+    // Mouse report sending is handled by mouseTimerTick() at 1000Hz
+    // This function only updates the smoothed velocity target
 
-    // Convert to integer pixels - rounding gives best sub-pixel behavior
-    int8_t dx = (int8_t)roundf(smoothed_mouse_x);
-    int8_t dy = (int8_t)roundf(smoothed_mouse_y);
-
-    // Send single report per sample - fast, no delays, no splitting
-    // Smoothing prevents jumps by ramping velocity gradually
-    // At 240Hz even moderate pixel values look buttery smooth
-    sendMouseReport(dx, dy, 0, button_state);
-
-    // Debug logging (throttled)
+    // Debug logging (throttled - once per second at ~240Hz)
     static int pos_debug_counter = 0;
-    if (++pos_debug_counter >= 100)
+    if (++pos_debug_counter >= 240)
     {
         pos_debug_counter = 0;
-        ESP_LOGI(TAG, "🖱️  Mouse: pos(%.1f, %.1f) → smooth(%.2f, %.2f) → Δ(%d, %d)",
-                 pos_x, pos_y, smoothed_mouse_x, smoothed_mouse_y, dx, dy);
+        ESP_LOGI(TAG, "🖱️  Mouse: pos(%.1f, %.1f) → smooth(%.2f, %.2f) sens=%.1f",
+                 pos_x, pos_y, smoothed_mouse_x, smoothed_mouse_y, mouse_sensitivity);
     }
+#endif
+}
+
+// --- 1kHz Mouse Timer Methods ---
+// Sends mouse reports at 1000Hz, matching USB polling rate (bInterval=1)
+// BLE updates smoothed velocity at ~240Hz; timer fills every USB frame
+
+void USBHIDManager::mouseTimerCallback(void *arg)
+{
+    USBHIDManager *self = static_cast<USBHIDManager *>(arg);
+    self->mouseTimerTick();
+}
+
+void USBHIDManager::mouseTimerTick()
+{
+#if USE_USB_HID_DEVICE
+    // Only send mouse reports when in mouse mode and ready
+    if (!initialized || !mouse_enabled || in_spell_mode || getHidMode() != HID_MODE_MOUSE)
+        return;
+    if (!tud_hid_ready())
+        return;
+
+    // Scale smoothed velocity from per-BLE-frame (~240Hz) to per-timer-tick (1000Hz)
+    // Ratio = 240/1000 = 0.24: spread each BLE sample across ~4 USB frames
+    constexpr float TIMER_BLE_RATIO = 0.24f;
+
+    float vx = smoothed_mouse_x * TIMER_BLE_RATIO;
+    float vy = smoothed_mouse_y * TIMER_BLE_RATIO;
+
+    // Sub-pixel accumulation: track fractional pixel remainders
+    // At slow speeds this evenly spaces 1px movements instead of stuttering
+    accumulated_x += vx;
+    accumulated_y += vy;
+
+    // Extract integer part for the report, keep fractional remainder
+    int8_t dx = (int8_t)truncf(accumulated_x);
+    int8_t dy = (int8_t)truncf(accumulated_y);
+    accumulated_x -= (float)dx;
+    accumulated_y -= (float)dy;
+
+    // Safety: prevent accumulator drift from floating-point errors
+    if (accumulated_x > 10.0f || accumulated_x < -10.0f)
+        accumulated_x = 0.0f;
+    if (accumulated_y > 10.0f || accumulated_y < -10.0f)
+        accumulated_y = 0.0f;
+
+    sendMouseReport(dx, dy, 0, button_state);
+#endif
+}
+
+void USBHIDManager::startMouseTimer()
+{
+#if USE_USB_HID_DEVICE
+    if (mouse_timer_running)
+        return;
+
+    esp_timer_create_args_t timer_args = {};
+    timer_args.callback = mouseTimerCallback;
+    timer_args.arg = this;
+    timer_args.dispatch_method = ESP_TIMER_TASK;
+    timer_args.name = "mouse_1khz";
+    timer_args.skip_unhandled_events = true;
+
+    esp_err_t err = esp_timer_create(&timer_args, &mouse_timer_handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to create mouse timer: %s", esp_err_to_name(err));
+        return;
+    }
+
+    // 1000 microseconds = 1ms = 1000Hz — matches USB bInterval=1
+    err = esp_timer_start_periodic(mouse_timer_handle, 1000);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to start mouse timer: %s", esp_err_to_name(err));
+        esp_timer_delete(mouse_timer_handle);
+        mouse_timer_handle = nullptr;
+        return;
+    }
+
+    mouse_timer_running = true;
+    ESP_LOGI(TAG, "Mouse 1kHz timer started (fills every USB frame)");
+#endif
+}
+
+void USBHIDManager::stopMouseTimer()
+{
+#if USE_USB_HID_DEVICE
+    if (!mouse_timer_running || !mouse_timer_handle)
+        return;
+
+    esp_timer_stop(mouse_timer_handle);
+    esp_timer_delete(mouse_timer_handle);
+    mouse_timer_handle = nullptr;
+    mouse_timer_running = false;
+    ESP_LOGI(TAG, "Mouse 1kHz timer stopped");
 #endif
 }
 
@@ -1754,10 +1834,6 @@ void USBHIDManager::resetMouseSmoothing()
     mouse_smoothing_initialized = false;
     smoothed_mouse_x = 0.0f;
     smoothed_mouse_y = 0.0f;
-    prev_vel_x = 0.0f;
-    prev_vel_y = 0.0f;
-    predicted_x = 0.0f;
-    predicted_y = 0.0f;
     accumulated_x = 0.0f;
     accumulated_y = 0.0f;
     ESP_LOGI(TAG, "🔄 Mouse smoothing reset");

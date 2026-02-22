@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <nvs.h>
+#include "esp_timer.h"
 
 enum HIDMode : uint8_t
 {
@@ -145,13 +146,11 @@ private:
     float smoothed_mouse_y;
     bool mouse_smoothing_initialized;
 
-    // Predictive motion tracking for gap-filling
-    float prev_vel_x;
-    float prev_vel_y;
-    float predicted_x;
-    float predicted_y;
+    // 1kHz timer for smooth mouse report sending
+    esp_timer_handle_t mouse_timer_handle;
+    bool mouse_timer_running;
 
-    // Sub-pixel interpolation accumulator for ultra-smooth motion
+    // Sub-pixel accumulator for smooth motion at all speeds
     float accumulated_x;
     float accumulated_y;
 
@@ -161,4 +160,10 @@ private:
     void sendGamepadReport(int8_t lx, int8_t ly, int8_t rx, int8_t ry, uint8_t lt, uint8_t rt, uint16_t buttons, uint8_t hat);
     uint8_t getKeycodeForSpell(const char *spell_name);
     void cleanupOldNvsEntries(); // Remove orphaned individual spell NVS entries
+
+    // 1kHz mouse timer for filling every USB frame with a report
+    static void mouseTimerCallback(void *arg);
+    void mouseTimerTick();
+    void startMouseTimer();
+    void stopMouseTimer();
 };
