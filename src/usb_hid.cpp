@@ -362,8 +362,6 @@ USBHIDManager::USBHIDManager()
       keyboard_enabled(true),
       mouse_sensitivity(1.0f),
       in_spell_mode(false),
-      accumulated_x(0),
-      accumulated_y(0),
       button_state(0),
       gamepad_buttons(0),
       gamepad_lx(0),
@@ -375,18 +373,30 @@ USBHIDManager::USBHIDManager()
       gamepad_hat(8),
       smoothed_lx(0.0f),
       smoothed_ly(0.0f),
-      smoothing_initialized(false)
+      smoothing_initialized(false),
+      smoothed_mouse_x(0.0f),
+      smoothed_mouse_y(0.0f),
+      mouse_smoothing_initialized(false),
+      prev_vel_x(0.0f),
+      prev_vel_y(0.0f),
+      predicted_x(0.0f),
+      predicted_y(0.0f),
+      accumulated_x(0.0f),
+      accumulated_y(0.0f)
 {
     // Initialize default settings
     settings.mouse_sensitivity = 1.0f;
-    settings.invert_mouse_y = false;  // Default: natural (wand UP = cursor UP, since IMU gives negative for up)
-    settings.mouse_enabled = true;    // Default: enabled
-    settings.keyboard_enabled = true; // Default: enabled
+    settings.invert_mouse_y = false;      // Default: natural (wand UP = cursor UP, since IMU gives negative for up)
+    settings.mouse_enabled = true;        // Default: enabled
+    settings.keyboard_enabled = true;     // Default: enabled
+    settings.mouse_4button_click = false; // Default: disabled (use 4-button for spell tracking)
     settings.hid_mode = HID_MODE_MOUSE;
     settings.gamepad_sensitivity = 1.0f;
     settings.gamepad_deadzone = 0.05f;
-    settings.gamepad_invert_y = false; // Default: natural (wand UP = stick UP)
-    settings.gamepad_stick_mode = 0;   // Default: left stick
+    settings.gamepad_invert_y = false;       // Default: natural (wand UP = stick UP)
+    settings.gamepad_stick_mode = 0;         // Default: left stick
+    settings.auto_recenter_on_still = false; // Default: disabled (manual recenter only)
+    settings.stillness_threshold = 40.0f;    // Default: 40 (higher = easier to stay still)
     // Initialize all spell keycodes to 0 (disabled)
     memset(settings.spell_keycodes, 0, sizeof(settings.spell_keycodes));
     memset(settings.spell_gamepad_buttons, 0, sizeof(settings.spell_gamepad_buttons));
@@ -507,6 +517,91 @@ void USBHIDManager::updateMouseFromGesture(float delta_x, float delta_y)
     if (dx != 0 || dy != 0)
     {
         sendMouseReport(dx, dy, 0, button_state);
+    }
+#endif
+}
+
+void USBHIDManager::updateMouseFromPosition(float pos_x, float pos_y)
+{
+#if USE_USB_HID_DEVICE
+    if (!initialized || !mouse_enabled || in_spell_mode || getHidMode() != HID_MODE_MOUSE)
+        return;
+
+    // Velocity-based mouse: position = cursor velocity
+    // Position range: ~[-300, +300] from AHRS Euler angles
+    // BASE_SCALE tuned for responsive, smooth motion at 240Hz
+    constexpr float BASE_SCALE = 0.015f;
+    float scale = BASE_SCALE * mouse_sensitivity;
+
+    // Apply Y-axis inversion setting
+    if (settings.invert_mouse_y)
+    {
+        pos_y = -pos_y;
+    }
+
+    // Scale position to velocity (pixels per frame)
+    float vel_x = pos_x * scale;
+    float vel_y = pos_y * scale;
+
+    // Light exponential smoothing for responsive motion
+    constexpr float SMOOTHING_ALPHA = 0.7f; // Very responsive
+
+    if (!mouse_smoothing_initialized)
+    {
+        // Initialize filter
+        smoothed_mouse_x = vel_x;
+        smoothed_mouse_y = vel_y;
+        accumulated_x = 0.0f;
+        accumulated_y = 0.0f;
+        mouse_smoothing_initialized = true;
+    }
+    else
+    {
+        // Simple exponential smoothing - responsive and clean
+        smoothed_mouse_x = SMOOTHING_ALPHA * vel_x + (1.0f - SMOOTHING_ALPHA) * smoothed_mouse_x;
+        smoothed_mouse_y = SMOOTHING_ALPHA * vel_y + (1.0f - SMOOTHING_ALPHA) * smoothed_mouse_y;
+    }
+
+    // Sub-pixel accumulation for smooth slow movements
+    accumulated_x += smoothed_mouse_x;
+    accumulated_y += smoothed_mouse_y;
+
+    // Clamp accumulated values to valid HID range (±127)
+    if (accumulated_x > 127.0f)
+        accumulated_x = 127.0f;
+    if (accumulated_x < -127.0f)
+        accumulated_x = -127.0f;
+    if (accumulated_y > 127.0f)
+        accumulated_y = 127.0f;
+    if (accumulated_y < -127.0f)
+        accumulated_y = -127.0f;
+
+    // Extract integer movement, keep fractional remainder
+    int8_t dx = 0;
+    int8_t dy = 0;
+
+    if (accumulated_x >= 1.0f || accumulated_x <= -1.0f)
+    {
+        dx = (int8_t)accumulated_x;
+        accumulated_x -= (float)dx;
+    }
+
+    if (accumulated_y >= 1.0f || accumulated_y <= -1.0f)
+    {
+        dy = (int8_t)accumulated_y;
+        accumulated_y -= (float)dy;
+    }
+
+    // Send directly - fast and responsive
+    sendMouseReport(dx, dy, 0, button_state);
+
+    // Debug logging (throttled)
+    static int pos_debug_counter = 0;
+    if (++pos_debug_counter >= 100)
+    {
+        pos_debug_counter = 0;
+        ESP_LOGI(TAG, "🖱️  Mouse: pos(%.1f, %.1f) → vel(%.2f, %.2f) → Δ(%d, %d)",
+                 pos_x, pos_y, smoothed_mouse_x, smoothed_mouse_y, dx, dy);
     }
 #endif
 }
@@ -1129,6 +1224,48 @@ bool USBHIDManager::loadSettings()
     err = nvs_get_u8(nvs_handle, "kbd_enabled", &keyboard_en);
     settings.keyboard_enabled = (keyboard_en != 0);
 
+    // Load mouse_4button_click (NVS key: 11 chars, under 15-char limit)
+    uint8_t ms_4btn = 0; // Default: disabled
+    err = nvs_get_u8(nvs_handle, "ms_4btn_clk", &ms_4btn);
+    if (err == ESP_OK)
+    {
+        settings.mouse_4button_click = (ms_4btn != 0);
+        ESP_LOGI(TAG, "✓ Loaded mouse_4button_click from NVS: %s", settings.mouse_4button_click ? "enabled" : "disabled");
+    }
+    else
+    {
+        settings.mouse_4button_click = false;
+        ESP_LOGI(TAG, "⚠ mouse_4button_click not found in NVS, using default: disabled");
+    }
+
+    // Load auto_recenter_on_still (NVS key: 13 chars, under 15-char limit)
+    uint8_t auto_rectr = 0; // Default: disabled
+    err = nvs_get_u8(nvs_handle, "auto_rectr_st", &auto_rectr);
+    if (err == ESP_OK)
+    {
+        settings.auto_recenter_on_still = (auto_rectr != 0);
+        ESP_LOGI(TAG, "✓ Loaded auto_recenter_on_still from NVS: %s", settings.auto_recenter_on_still ? "enabled" : "disabled");
+    }
+    else
+    {
+        settings.auto_recenter_on_still = false;
+        ESP_LOGI(TAG, "⚠ auto_recenter_on_still not found in NVS, using default: disabled");
+    }
+
+    // Load stillness_threshold (NVS key: stored as uint8_t, range 10-100)
+    uint8_t still_thresh = 40; // Default: 40
+    err = nvs_get_u8(nvs_handle, "still_thresh", &still_thresh);
+    if (err == ESP_OK)
+    {
+        settings.stillness_threshold = (float)still_thresh;
+        ESP_LOGI(TAG, "✓ Loaded stillness_threshold from NVS: %.0f", settings.stillness_threshold);
+    }
+    else
+    {
+        settings.stillness_threshold = 40.0f;
+        ESP_LOGI(TAG, "⚠ stillness_threshold not found in NVS, using default: 40");
+    }
+
     // Load HID mode
     uint8_t hid_mode = HID_MODE_MOUSE;
     err = nvs_get_u8(nvs_handle, "hid_mode", &hid_mode);
@@ -1346,6 +1483,31 @@ bool USBHIDManager::saveSettings()
         any_errors = true;
     }
 
+    // Save mouse_4button_click (key: 11 chars, under 15-char limit)
+    err = nvs_set_u8(nvs_handle, "ms_4btn_clk", settings.mouse_4button_click ? 1 : 0);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "❌ nvs_set_u8 ms_4btn_clk failed: %s", esp_err_to_name(err));
+        any_errors = true;
+    }
+
+    // Save auto_recenter_on_still (key: 13 chars, under 15-char limit)
+    err = nvs_set_u8(nvs_handle, "auto_rectr_st", settings.auto_recenter_on_still ? 1 : 0);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "❌ nvs_set_u8 auto_rectr_st failed: %s", esp_err_to_name(err));
+        any_errors = true;
+    }
+
+    // Save stillness_threshold (key: 12 chars, stored as uint8_t)
+    uint8_t still_thresh = (uint8_t)settings.stillness_threshold;
+    err = nvs_set_u8(nvs_handle, "still_thresh", still_thresh);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "❌ nvs_set_u8 still_thresh failed: %s", esp_err_to_name(err));
+        any_errors = true;
+    }
+
     // Save HID mode
     err = nvs_set_u8(nvs_handle, "hid_mode", settings.hid_mode);
     if (err != ESP_OK)
@@ -1518,6 +1680,10 @@ void USBHIDManager::setMouseSensitivityValue(float sensitivity)
 
     mouse_sensitivity = sensitivity;
     settings.mouse_sensitivity = sensitivity;
+
+    // Reset smoothing to prevent position jumps when changing sensitivity
+    resetMouseSmoothing();
+
     ESP_LOGI(TAG, "Mouse sensitivity set to %.2f", sensitivity);
 }
 
@@ -1560,6 +1726,31 @@ void USBHIDManager::setInvertMouseY(bool invert)
              invert ? "DOWN" : "UP");
 }
 
+void USBHIDManager::setMouse4ButtonClick(bool enabled)
+{
+    settings.mouse_4button_click = enabled;
+    ESP_LOGI(TAG, "🔄 Mouse 4-button click set to: %s (mouse mode only, <400ms = click)",
+             enabled ? "enabled" : "disabled");
+}
+
+void USBHIDManager::setAutoRecenterOnStill(bool enabled)
+{
+    settings.auto_recenter_on_still = enabled;
+    ESP_LOGI(TAG, "🔄 Auto-recenter on still set to: %s (2s hold = recalibrate)",
+             enabled ? "enabled" : "disabled");
+}
+
+void USBHIDManager::setStillnessThreshold(float threshold)
+{
+    if (threshold < 10.0f)
+        threshold = 10.0f;
+    if (threshold > 100.0f)
+        threshold = 100.0f;
+
+    settings.stillness_threshold = threshold;
+    ESP_LOGI(TAG, "🔄 Stillness threshold set to: %.0f (lower = more sensitive)", threshold);
+}
+
 void USBHIDManager::setGamepadInvertY(bool invert)
 {
     settings.gamepad_invert_y = invert;
@@ -1572,6 +1763,20 @@ void USBHIDManager::resetGamepadSmoothing()
     smoothed_lx = 0.0f;
     smoothed_ly = 0.0f;
     ESP_LOGI(TAG, "🔄 Gamepad smoothing reset");
+}
+
+void USBHIDManager::resetMouseSmoothing()
+{
+    mouse_smoothing_initialized = false;
+    smoothed_mouse_x = 0.0f;
+    smoothed_mouse_y = 0.0f;
+    prev_vel_x = 0.0f;
+    prev_vel_y = 0.0f;
+    predicted_x = 0.0f;
+    predicted_y = 0.0f;
+    accumulated_x = 0.0f;
+    accumulated_y = 0.0f;
+    ESP_LOGI(TAG, "🔄 Mouse smoothing reset");
 }
 
 void USBHIDManager::setSpellGamepadButton(const char *spell_name, uint8_t button)

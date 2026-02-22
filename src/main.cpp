@@ -972,16 +972,12 @@ extern "C" void app_main()
 #endif
 
 #if USE_USB_HID_DEVICE
-    // Wait before initializing USB HID to avoid bootloader conflicts
-    ESP_LOGI(TAG, "⏳ Waiting 30 seconds before USB HID initialization...");
-    vTaskDelay(pdMS_TO_TICKS(30000));
-
     // Initialize USB HID
     ESP_LOGI(TAG, "Initializing USB HID...");
     if (usbHID.begin())
     {
         ESP_LOGI(TAG, "✓ USB HID ready (Mouse + Keyboard)");
-        usbHID.setMouseSensitivity(1.5f); // Adjust as needed
+        ESP_LOGI(TAG, "✓ Mouse sensitivity loaded from NVS: %.2f", usbHID.getMouseSensitivity());
     }
     else
     {

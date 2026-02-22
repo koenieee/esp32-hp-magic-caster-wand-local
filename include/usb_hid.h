@@ -21,12 +21,15 @@ struct USBHIDSettings
     bool invert_mouse_y;               // Invert Y-axis (true = wand up -> cursor up, false = wand up -> cursor down)
     bool mouse_enabled;                // Enable/disable mouse input (default true)
     bool keyboard_enabled;             // Enable/disable keyboard input (default true)
+    bool mouse_4button_click;          // Enable mouse click on 4-button press (mouse mode only, <400ms = click)
     uint8_t hid_mode;                  // Current HID mode (see HIDMode)
     float gamepad_sensitivity;         // Gamepad sensitivity multiplier (default 1.0)
     float gamepad_deadzone;            // Gamepad dead zone (0.0-0.5)
     bool gamepad_invert_y;             // Invert gamepad Y-axis
     uint8_t gamepad_stick_mode;        // Gamepad stick selection (0=left, 1=right)
     uint8_t spell_gamepad_buttons[73]; // Maps spell 0-72 to gamepad button (0=disabled, 1-20)
+    bool auto_recenter_on_still;       // Auto-recalibrate when wand held still for 2+ seconds
+    float stillness_threshold;         // Movement threshold for stillness detection (10-100, default 40)
 };
 
 // USB HID Manager for Magic Caster Wand
@@ -43,7 +46,8 @@ public:
 
     // Mouse functions (gyro-based air mouse)
     void updateMouse(float gyro_x, float gyro_y, float gyro_z);
-    void updateMouseFromGesture(float delta_x, float delta_y);
+    void updateMouseFromGesture(float delta_x, float delta_y);   // Legacy: delta-based movement
+    void updateMouseFromPosition(float pos_x, float pos_y);      // New: velocity-based (position = velocity)
     void updateGamepadFromGesture(float delta_x, float delta_y); // Legacy: delta-based
     void updateGamepadFromPosition(float pos_x, float pos_y);    // New: absolute position for joystick
     void setGamepadButtons(uint16_t buttons);
@@ -53,6 +57,7 @@ public:
     void setGamepadDeadzoneValue(float deadzone);
     void setGamepadInvertY(bool invert);
     void resetGamepadSmoothing(); // Reset smoothing filter (call on recenter)
+    void resetMouseSmoothing();   // Reset mouse smoothing filter
 
     // Keyboard functions (spell to key mapping)
     void sendKeyPress(uint8_t keycode, uint8_t modifiers = 0);
@@ -104,6 +109,12 @@ public:
     const uint8_t *getSpellGamepadButtons() const { return settings.spell_gamepad_buttons; }
     bool getInvertMouseY() const { return settings.invert_mouse_y; }
     void setInvertMouseY(bool invert);
+    bool getMouse4ButtonClick() const { return settings.mouse_4button_click; }
+    void setMouse4ButtonClick(bool enabled);
+    bool getAutoRecenterOnStill() const { return settings.auto_recenter_on_still; }
+    void setAutoRecenterOnStill(bool enabled);
+    float getStillnessThreshold() const { return settings.stillness_threshold; }
+    void setStillnessThreshold(float threshold);
 
 private:
     bool initialized;
@@ -114,8 +125,6 @@ private:
     USBHIDSettings settings; // Current NVS settings
 
     // Mouse state
-    int8_t accumulated_x;
-    int8_t accumulated_y;
     uint8_t button_state;
     uint16_t gamepad_buttons;
     int8_t gamepad_lx;
@@ -130,6 +139,21 @@ private:
     float smoothed_lx;
     float smoothed_ly;
     bool smoothing_initialized;
+
+    // Smoothing for mouse velocity
+    float smoothed_mouse_x;
+    float smoothed_mouse_y;
+    bool mouse_smoothing_initialized;
+
+    // Predictive motion tracking for gap-filling
+    float prev_vel_x;
+    float prev_vel_y;
+    float predicted_x;
+    float predicted_y;
+
+    // Sub-pixel interpolation accumulator for ultra-smooth motion
+    float accumulated_x;
+    float accumulated_y;
 
     // Helper functions
     void sendMouseReport(int8_t x, int8_t y, int8_t wheel, uint8_t buttons);

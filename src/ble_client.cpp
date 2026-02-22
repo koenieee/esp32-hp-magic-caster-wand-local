@@ -26,6 +26,12 @@ static WebServer *g_web_server = nullptr;
 static bool g_post_spell_cooldown_active = false;
 static uint32_t g_post_spell_cooldown_start_ms = 0;
 
+// Auto-recenter on stillness tracking
+static bool g_is_still = false;
+static uint32_t g_stillness_start_ms = 0;
+static constexpr uint32_t STILLNESS_DURATION_MS = 2000; // 2 seconds of stillness
+// Note: STILLNESS_THRESHOLD is now read from settings (default 40.0f, adjustable 10-100)
+
 // ============================================================================
 // ESPHome-inspired BLE connection parameters (esp32_ble_client/ble_client_base.cpp)
 // ============================================================================
@@ -890,6 +896,9 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
         return;
     }
 
+    // Static variable to track 4-button press time for click detection
+    static uint32_t four_button_press_time_ms = 0;
+
     // Count pressed buttons for easier tracking
     uint8_t buttonsPressed = __builtin_popcount(buttonState & 0x0F);
     bool enoughButtonsPressed = (buttonsPressed >= BUTTON_MIN_FOR_TRACKING);
@@ -917,43 +926,13 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
         }
     }
 
-    // Manual recenter: 2+ buttons pressed (but not tracking threshold)
-    // This allows manual recentering without starting a spell
-    if (buttonsPressed >= 2 && buttonsPressed < BUTTON_MIN_FOR_TRACKING &&
-        !ahrsTracker.isTracking())
-    {
-        static uint8_t last_recenter_button_count = 0;
-        static uint32_t last_recenter_time_ms = 0;
-        uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-
-        // Detect new 2-button press (transition) with cooldown
-        if (last_recenter_button_count < 2 && now_ms - last_recenter_time_ms > 500)
-        {
-#if USE_USB_HID_DEVICE
-            HIDMode hid_mode = usbHID.getHidMode();
-            if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED)
-            {
-                ahrsTracker.resetGamepadReference();
-                usbHID.resetGamepadSmoothing();
-                ESP_LOGI(TAG, "🎯 Manual recenter: %d buttons pressed", buttonsPressed);
-                last_recenter_time_ms = now_ms;
-
-                // Cancel post-spell cooldown if active
-                g_post_spell_cooldown_active = false;
-            }
-#endif
-        }
-        last_recenter_button_count = buttonsPressed;
-    }
-    else if (buttonsPressed < 2)
-    {
-        static uint8_t last_recenter_button_count = 0;
-        last_recenter_button_count = 0;
-    }
-
     // 3+ buttons pressed - start tracking (was 4 buttons required)
+    // When buttons are released without movement, this acts as a recenter
     if (enoughButtonsPressed && !wasEnoughPressed)
     {
+        // Capture timestamp for click detection (mouse mode only)
+        four_button_press_time_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
         // Log heap status before starting tracking
         ESP_LOGI(TAG, "Free heap before tracking: %lu bytes", esp_get_free_heap_size());
 
@@ -961,14 +940,24 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
         wandCommands.setLED(LedGroup::TIP, 255, 0, 255);
         if (!ahrsTracker.isTracking())
         {
-            // Recenter gamepad before starting spell tracking
+            // Recenter gamepad/mouse before starting spell tracking
 #if USE_USB_HID_DEVICE
             HIDMode hid_mode = usbHID.getHidMode();
-            if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED)
+            if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED || hid_mode == HID_MODE_MOUSE)
             {
                 ahrsTracker.resetGamepadReference();
-                usbHID.resetGamepadSmoothing();
-                ESP_LOGI(TAG, "🎯 Manual recenter: spell tracking started");
+
+                if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED)
+                {
+                    usbHID.resetGamepadSmoothing();
+                }
+                else if (hid_mode == HID_MODE_MOUSE)
+                {
+                    usbHID.resetMouseSmoothing();
+                }
+
+                ESP_LOGI(TAG, "🎯 Recenter on spell start (%s mode)",
+                         hid_mode == HID_MODE_MOUSE ? "mouse" : "gamepad");
 
                 // Cancel post-spell cooldown if active
                 g_post_spell_cooldown_active = false;
@@ -989,9 +978,40 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
             }
         }
     }
-    // Buttons released - detect spell
+    // Buttons released - detect spell or process click
     else if (!enoughButtonsPressed && wasEnoughPressed)
     {
+        // Check for quick click in mouse mode (if enabled)
+#if USE_USB_HID_DEVICE
+        HIDMode hid_mode = usbHID.getHidMode();
+        if (hid_mode == HID_MODE_MOUSE && usbHID.getMouse4ButtonClick())
+        {
+            uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            uint32_t hold_duration = now_ms - four_button_press_time_ms;
+
+            if (hold_duration < 400)
+            {
+                // Quick press (<400ms) = left click
+                usbHID.mouseClick(1); // Left click
+                ESP_LOGI(TAG, "🖱️  Mouse click: quick press (%u ms)", hold_duration);
+
+                // Cancel tracking and restore state
+                if (ahrsTracker.isTracking())
+                {
+                    Position2D *dummy = nullptr;
+                    size_t dummy_count = 0;
+                    ahrsTracker.stopTracking(&dummy, &dummy_count);
+                }
+                wandCommands.clearAllLEDs();
+                usbHID.setInSpellMode(false);
+                lastButtonState = buttonState;
+                return; // Don't process as spell
+            }
+            // else: hold_duration >= 400ms, continue to spell processing below
+            ESP_LOGI(TAG, "🪄 Spell mode: held for %u ms", hold_duration);
+        }
+#endif
+
         // Clear wand LEDs after spell tracking
         wandCommands.clearAllLEDs();
         if (ahrsTracker.isTracking())
@@ -1035,13 +1055,13 @@ void WandBLEClient::processButtonPacket(const uint8_t *data, size_t length)
             // Re-enable mouse movement after spell tracking
 #if USE_USB_HID_DEVICE
             usbHID.setInSpellMode(false);
-            // Start 0.5-second cooldown before recentering (user returns to rest position)
+            // Start 800ms cooldown before resuming mouse/gamepad (user returns to rest position)
             HIDMode hid_mode = usbHID.getHidMode();
-            if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED)
+            if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED || hid_mode == HID_MODE_MOUSE)
             {
                 g_post_spell_cooldown_active = true;
                 g_post_spell_cooldown_start_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-                ESP_LOGI(TAG, "🎯 Post-spell cooldown: waiting 0.5s before recenter");
+                ESP_LOGI(TAG, "🎯 Post-spell cooldown: freezing input for 0.8s");
             }
 #endif
 
@@ -1114,19 +1134,12 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
     {
         Position2D pos;
 
-        // Gamepad mode: use simple Euler angle-based position (independent X/Y)
-        // Mouse mode: use quaternion projection (coupled axes, fine for delta-based movement)
+        // Both gamepad and mouse modes now use Euler angle-based position tracking
+        // This provides independent X/Y axes suitable for velocity-based control
+        // Mouse: position = velocity (tilt up → cursor moves up continuously)
+        // Gamepad: position = stick deflection (tilt up → stick pushed up)
 #if USE_USB_HID_DEVICE
-        bool got_position = false;
-        HIDMode hid_mode = usbHID.getHidMode();
-        if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED)
-        {
-            got_position = ahrsTracker.getGamepadPosition(pos);
-        }
-        else
-        {
-            got_position = ahrsTracker.getMousePosition(pos);
-        }
+        bool got_position = ahrsTracker.getGamepadPosition(pos);
 #else
         bool got_position = ahrsTracker.getMousePosition(pos);
 #endif
@@ -1191,11 +1204,19 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                 accum_dy += dy;
                 last_mouse_pos = pos;
 
-                // Rate limit updates to ~60 Hz (every 4th sample)
-                if (++mouse_counter >= 4)
-                {
+                // Increment counter every sample
+                ++mouse_counter;
+
 #if USE_USB_HID_DEVICE
-                    HIDMode hid_mode = usbHID.getHidMode();
+                HIDMode hid_mode = usbHID.getHidMode();
+
+                // Different polling rates for mouse vs gamepad
+                // Mouse: Send EVERY sample (~240 Hz) for smoothest possible motion - NO GAPS!
+                // Gamepad: Send every 4th sample (~60 Hz) - position-based doesn't need high rate
+                int rate_limit = (hid_mode == HID_MODE_MOUSE) ? 1 : 4;
+
+                if (mouse_counter >= rate_limit)
+                {
                     if (hid_mode == HID_MODE_GAMEPAD_ONLY || hid_mode == HID_MODE_GAMEPAD_MIXED)
                     {
                         // Check for post-spell cooldown
@@ -1204,7 +1225,7 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                             uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
                             uint32_t elapsed_ms = now_ms - g_post_spell_cooldown_start_ms;
 
-                            if (elapsed_ms >= 500)
+                            if (elapsed_ms >= 800)
                             {
                                 // Cooldown expired: recenter and resume normal operation
                                 ahrsTracker.resetGamepadReference();
@@ -1225,12 +1246,101 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                             // Normal operation: pass absolute position directly
                             // Position represents wand tilt from neutral, stick follows position
                             usbHID.updateGamepadFromPosition(pos.x, pos.y);
+
+                            // Auto-recenter on stillness detection (if enabled)
+                            if (usbHID.getAutoRecenterOnStill())
+                            {
+                                float movement = sqrtf(pos.x * pos.x + pos.y * pos.y);
+                                uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+                                float stillness_threshold = usbHID.getStillnessThreshold();
+
+                                if (movement < stillness_threshold)
+                                {
+                                    if (!g_is_still)
+                                    {
+                                        // Just became still
+                                        g_is_still = true;
+                                        g_stillness_start_ms = now_ms;
+                                    }
+                                    else if ((now_ms - g_stillness_start_ms) >= STILLNESS_DURATION_MS)
+                                    {
+                                        // Held still for 2+ seconds: recalibrate
+                                        ahrsTracker.resetGamepadReference();
+                                        usbHID.resetGamepadSmoothing();
+                                        g_is_still = false; // Reset to avoid repeated recalibrations
+                                        ESP_LOGI(TAG, "🎯 Auto-recenter: wand still for 2s (gamepad)");
+                                    }
+                                }
+                                else
+                                {
+                                    // Movement detected: reset stillness tracker
+                                    g_is_still = false;
+                                }
+                            }
                         }
                     }
                     else if (hid_mode == HID_MODE_MOUSE)
                     {
-                        // For mouse mode: pass accumulated deltas (velocity-based)
-                        usbHID.updateMouseFromGesture(accum_dx, accum_dy);
+                        // Check for post-spell cooldown
+                        if (g_post_spell_cooldown_active)
+                        {
+                            uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+                            uint32_t elapsed_ms = now_ms - g_post_spell_cooldown_start_ms;
+
+                            if (elapsed_ms >= 800)
+                            {
+                                // Cooldown expired: recalibrate and resume normal operation
+                                ahrsTracker.resetGamepadReference();
+                                usbHID.resetMouseSmoothing();
+                                g_post_spell_cooldown_active = false;
+                                ESP_LOGI(TAG, "🖱️  Post-spell recenter: cooldown complete, mouse resumed");
+                                // Resume normal mouse control
+                                usbHID.updateMouseFromPosition(pos.x, pos.y);
+                            }
+                            else
+                            {
+                                // During cooldown: freeze mouse, send (0,0) velocity
+                                usbHID.updateMouseFromPosition(0.0f, 0.0f);
+                            }
+                        }
+                        else
+                        {
+                            // Normal operation: pass absolute position as velocity
+                            // Position represents wand tilt: tilt up → cursor moves up continuously
+                            // Center wand → position (0,0) → cursor stops
+                            usbHID.updateMouseFromPosition(pos.x, pos.y);
+
+                            // Auto-recenter on stillness detection (if enabled)
+                            if (usbHID.getAutoRecenterOnStill())
+                            {
+                                float movement = sqrtf(pos.x * pos.x + pos.y * pos.y);
+                                uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+                                float stillness_threshold = usbHID.getStillnessThreshold();
+
+                                if (movement < stillness_threshold)
+                                {
+                                    if (!g_is_still)
+                                    {
+                                        // Just became still
+                                        g_is_still = true;
+                                        g_stillness_start_ms = now_ms;
+                                    }
+                                    else if ((now_ms - g_stillness_start_ms) >= STILLNESS_DURATION_MS)
+                                    {
+                                        // Held still for 2+ seconds: recalibrate
+                                        ahrsTracker.resetGamepadReference();
+                                        usbHID.resetMouseSmoothing();
+                                        g_is_still = false; // Reset to avoid repeated recalibrations
+                                        ESP_LOGI(TAG, "🖱️  Auto-recenter: wand still for 2s (mouse)");
+                                    }
+                                }
+                                else
+                                {
+                                    // Movement detected: reset stillness tracker
+                                    g_is_still = false;
+                                }
+                            }
+                        }
                     }
 #endif
                     accum_dx = 0.0f;
@@ -1293,7 +1403,7 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                         }
                     }
 #else
-                    dy = -dy; // Default: inverted
+                dy = -dy; // Default: inverted
 #endif
                     accum_dx += dx;
                     accum_dy += dy;
@@ -1334,9 +1444,9 @@ void WandBLEClient::updateAHRS(const IMUSample &sample)
                         broadcast_counter = 0;
                     }
 #else
-                    // Broadcast all gesture points at full IMU rate (~234 Hz)
-                    const Position2D &pos = positions[new_count - 1];
-                    webServer->broadcastGesturePoint(pos.x, pos.y);
+                // Broadcast all gesture points at full IMU rate (~234 Hz)
+                const Position2D &pos = positions[new_count - 1];
+                webServer->broadcastGesturePoint(pos.x, pos.y);
 #endif
                 }
             }

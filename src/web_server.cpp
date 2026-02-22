@@ -503,6 +503,34 @@ static const char index_html[] = R"rawliteral(
                                 💡 Click "Reset Settings" below if checkbox doesn't work
                             </div>
                         </div>
+                        <div style="margin: 10px 0;">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="mouse-4button-click" style="width: 18px; height: 18px;">
+                                <span>Enable Click on 4-Button Press (Mouse Mode)</span>
+                            </label>
+                            <div style="font-size: 0.8em; color: #888; margin-top: 5px;">
+                                Quick press (&lt;400ms) = left click, hold longer = spell tracking<br>
+                                📍 Only works in <strong>Mouse</strong> mode
+                            </div>
+                        </div>
+                        <div style="margin: 10px 0;">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="auto-recenter-still" style="width: 18px; height: 18px;">
+                                <span>Auto-Recenter When Wand Held Still</span>
+                            </label>
+                            <div style="font-size: 0.8em; color: #888; margin-top: 5px;">
+                                Holding wand still for 2+ seconds recalibrates center position<br>
+                                🎯 Works in both <strong>Mouse</strong> and <strong>Gamepad</strong> modes
+                            </div>
+                            <div style="margin-top: 10px;">
+                                <label style="display: block; margin-bottom: 5px;">Stillness Sensitivity: <span id="stillness-value">40</span></label>
+                                <input type="range" id="stillness-threshold" min="10" max="100" step="5" value="40" style="width: 100%;">
+                                <div style="font-size: 0.8em; color: #888; margin-top: 5px;">
+                                    Lower = harder to stay still (10), Higher = easier to trigger (100)<br>
+                                    📊 Adjusts how sensitive the auto-recenter detection is
+                                </div>
+                            </div>
+                        </div>
                         <div style="margin: 10px 0; border-top: 1px solid #444; padding-top: 10px;">
                             <label style="display: block; margin-bottom: 5px;">HID Mode:</label>
                             <select id="hid-mode" style="width: 100%; padding: 8px; border-radius: 4px; background: #111; color: #eee; border: 1px solid #444;">
@@ -1665,6 +1693,12 @@ static const char index_html[] = R"rawliteral(
             document.getElementById('gpad-deadzone-value').textContent = value.toFixed(2);
         });
         
+        // Stillness threshold slider handler
+        document.getElementById('stillness-threshold').addEventListener('input', (e) => {
+            const value = parseInt(e.target.value);
+            document.getElementById('stillness-value').textContent = value;
+        });
+        
         // Load and save settings with spell mappings
         function saveSettings() {
             const invertMouseY = document.getElementById('invert-mouse-y').checked;
@@ -1676,6 +1710,9 @@ static const char index_html[] = R"rawliteral(
             const settings = {
                 mouse_sensitivity: parseFloat(document.getElementById('mouse-sensitivity').value),
                 invert_mouse_y: invertMouseY,
+                mouse_4button_click: document.getElementById('mouse-4button-click').checked,
+                auto_recenter_on_still: document.getElementById('auto-recenter-still').checked,
+                stillness_threshold: parseInt(document.getElementById('stillness-threshold').value),
                 hid_mode: parseInt(document.getElementById('hid-mode').value),
                 gamepad_sensitivity: parseFloat(document.getElementById('gamepad-sensitivity').value),
                 gamepad_deadzone: parseFloat(document.getElementById('gamepad-deadzone').value),
@@ -1734,6 +1771,11 @@ static const char index_html[] = R"rawliteral(
                     document.getElementById('invert-mouse-y').checked = (data.invert_mouse_y === true);
                     
                     console.log('✅ Set invert-mouse-y checkbox to:', document.getElementById('invert-mouse-y').checked);
+                    
+                    document.getElementById('mouse-4button-click').checked = (data.mouse_4button_click === true);
+                    document.getElementById('auto-recenter-still').checked = (data.auto_recenter_on_still === true);
+                    document.getElementById('stillness-threshold').value = (data.stillness_threshold !== undefined) ? data.stillness_threshold : 40;
+                    document.getElementById('stillness-value').textContent = (data.stillness_threshold !== undefined) ? data.stillness_threshold : 40;
                     
                     document.getElementById('hid-mode').value = (data.hid_mode !== undefined) ? data.hid_mode : 0;
                     document.getElementById('gamepad-sensitivity').value = data.gamepad_sensitivity || 1.0;
@@ -3085,6 +3127,9 @@ esp_err_t WebServer::settings_get_handler(httpd_req_t *req)
 
     float mouse_sens = usbHID.getMouseSensitivity();
     bool mouse_invert = usbHID.getInvertMouseY();
+    bool mouse_4btn_click = usbHID.getMouse4ButtonClick();
+    bool auto_recenter = usbHID.getAutoRecenterOnStill();
+    float stillness_thresh = usbHID.getStillnessThreshold();
     HIDMode hid_mode = usbHID.getHidMode();
     float gamepad_sens = usbHID.getGamepadSensitivity();
     float gamepad_deadzone = usbHID.getGamepadDeadzone();
@@ -3098,9 +3143,12 @@ esp_err_t WebServer::settings_get_handler(httpd_req_t *req)
              gamepad_sens, gamepad_deadzone, gamepad_invert ? "true" : "false", gamepad_stick_mode);
 
     offset += snprintf(buffer + offset, buffer_size - offset,
-                       "{\"mouse_sensitivity\": %.2f, \"invert_mouse_y\": %s, \"hid_mode\": %u, \"gamepad_sensitivity\": %.2f, \"gamepad_deadzone\": %.2f, \"gamepad_invert_y\": %s, \"gamepad_stick_mode\": %u, \"spells\": [",
+                       "{\"mouse_sensitivity\": %.2f, \"invert_mouse_y\": %s, \"mouse_4button_click\": %s, \"auto_recenter_on_still\": %s, \"stillness_threshold\": %.0f, \"hid_mode\": %u, \"gamepad_sensitivity\": %.2f, \"gamepad_deadzone\": %.2f, \"gamepad_invert_y\": %s, \"gamepad_stick_mode\": %u, \"spells\": [",
                        mouse_sens,
                        mouse_invert ? "true" : "false",
+                       mouse_4btn_click ? "true" : "false",
+                       auto_recenter ? "true" : "false",
+                       stillness_thresh,
                        static_cast<unsigned>(hid_mode),
                        gamepad_sens,
                        gamepad_deadzone,
@@ -3353,6 +3401,48 @@ esp_err_t WebServer::settings_save_handler(httpd_req_t *req)
     else
     {
         ESP_LOGW(TAG, "⚠️ invert_mouse_y not found in JSON!");
+    }
+
+    // Parse mouse_4button_click
+    char *ms_4btn_ptr = strstr(buffer, "\"mouse_4button_click\"");
+    if (ms_4btn_ptr)
+    {
+        char *value_ptr = strchr(ms_4btn_ptr, ':');
+        if (value_ptr)
+        {
+            value_ptr++; // Skip colon
+            while (*value_ptr == ' ' || *value_ptr == '\t')
+                value_ptr++; // Skip whitespace
+            bool enabled = (strncmp(value_ptr, "true", 4) == 0);
+            usbHID.setMouse4ButtonClick(enabled);
+            ESP_LOGI(TAG, "✅ Set mouse_4button_click to: %s", enabled ? "enabled" : "disabled");
+        }
+    }
+
+    // Parse auto_recenter_on_still
+    char *auto_rectr_ptr = strstr(buffer, "\"auto_recenter_on_still\"");
+    if (auto_rectr_ptr)
+    {
+        char *value_ptr = strchr(auto_rectr_ptr, ':');
+        if (value_ptr)
+        {
+            value_ptr++; // Skip colon
+            while (*value_ptr == ' ' || *value_ptr == '\t')
+                value_ptr++; // Skip whitespace
+            bool enabled = (strncmp(value_ptr, "true", 4) == 0);
+            usbHID.setAutoRecenterOnStill(enabled);
+            ESP_LOGI(TAG, "✅ Set auto_recenter_on_still to: %s", enabled ? "enabled" : "disabled");
+        }
+    }
+
+    // Parse stillness_threshold
+    char *still_thresh_ptr = strstr(buffer, "\"stillness_threshold\"");
+    if (still_thresh_ptr)
+    {
+        int threshold = 40; // Default
+        sscanf(still_thresh_ptr, "\"stillness_threshold\":%d", &threshold);
+        usbHID.setStillnessThreshold((float)threshold);
+        ESP_LOGI(TAG, "✅ Set stillness_threshold to: %d", threshold);
     }
 
     // Parse HID mode
