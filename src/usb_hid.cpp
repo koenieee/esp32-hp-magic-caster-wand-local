@@ -212,7 +212,7 @@ static const uint8_t configuration_descriptor[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, USB_CONFIG_TOTAL_LEN, 0x00, 100),
     TUD_CDC_DESCRIPTOR(ITF_NUM_CDC, 4, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, 64),
     TUD_HID_DESCRIPTOR(ITF_NUM_HID, 0, HID_ITF_PROTOCOL_NONE,
-                       sizeof(hid_report_descriptor), EPNUM_HID, 16, 10),
+                       sizeof(hid_report_descriptor), EPNUM_HID, 16, 1), // bInterval=1ms → 1000Hz USB polling
 };
 
 static const char *string_descriptor[] = {
@@ -529,8 +529,8 @@ void USBHIDManager::updateMouseFromPosition(float pos_x, float pos_y)
 
     // Velocity-based mouse: position = cursor velocity
     // Position range: ~[-300, +300] from AHRS Euler angles
-    // BASE_SCALE tuned for responsive, smooth motion at 240Hz
-    constexpr float BASE_SCALE = 0.015f;
+    // Increased scale for responsive speed; smoothing prevents jumps
+    constexpr float BASE_SCALE = 0.017f;
     float scale = BASE_SCALE * mouse_sensitivity;
 
     // Apply Y-axis inversion setting
@@ -543,56 +543,40 @@ void USBHIDManager::updateMouseFromPosition(float pos_x, float pos_y)
     float vel_x = pos_x * scale;
     float vel_y = pos_y * scale;
 
-    // Light exponential smoothing for responsive motion
-    constexpr float SMOOTHING_ALPHA = 0.7f; // Very responsive
+    // Stronger smoothing prevents sudden velocity changes (= prevents jumps!)
+    // Alpha = 0.35: velocity changes gradually, never spikes
+    // This is the KEY anti-jump mechanism: smooth velocity = smooth cursor
+    constexpr float SMOOTHING_ALPHA = 0.35f;
 
     if (!mouse_smoothing_initialized)
     {
-        // Initialize filter
         smoothed_mouse_x = vel_x;
         smoothed_mouse_y = vel_y;
-        accumulated_x = 0.0f;
-        accumulated_y = 0.0f;
         mouse_smoothing_initialized = true;
     }
     else
     {
-        // Simple exponential smoothing - responsive and clean
         smoothed_mouse_x = SMOOTHING_ALPHA * vel_x + (1.0f - SMOOTHING_ALPHA) * smoothed_mouse_x;
         smoothed_mouse_y = SMOOTHING_ALPHA * vel_y + (1.0f - SMOOTHING_ALPHA) * smoothed_mouse_y;
     }
 
-    // Sub-pixel accumulation for smooth slow movements
-    accumulated_x += smoothed_mouse_x;
-    accumulated_y += smoothed_mouse_y;
+    // Clamp smoothed velocity to valid HID range (±127) before converting
+    if (smoothed_mouse_x > 127.0f)
+        smoothed_mouse_x = 127.0f;
+    if (smoothed_mouse_x < -127.0f)
+        smoothed_mouse_x = -127.0f;
+    if (smoothed_mouse_y > 127.0f)
+        smoothed_mouse_y = 127.0f;
+    if (smoothed_mouse_y < -127.0f)
+        smoothed_mouse_y = -127.0f;
 
-    // Clamp accumulated values to valid HID range (±127)
-    if (accumulated_x > 127.0f)
-        accumulated_x = 127.0f;
-    if (accumulated_x < -127.0f)
-        accumulated_x = -127.0f;
-    if (accumulated_y > 127.0f)
-        accumulated_y = 127.0f;
-    if (accumulated_y < -127.0f)
-        accumulated_y = -127.0f;
+    // Convert to integer pixels - rounding gives best sub-pixel behavior
+    int8_t dx = (int8_t)roundf(smoothed_mouse_x);
+    int8_t dy = (int8_t)roundf(smoothed_mouse_y);
 
-    // Extract integer movement, keep fractional remainder
-    int8_t dx = 0;
-    int8_t dy = 0;
-
-    if (accumulated_x >= 1.0f || accumulated_x <= -1.0f)
-    {
-        dx = (int8_t)accumulated_x;
-        accumulated_x -= (float)dx;
-    }
-
-    if (accumulated_y >= 1.0f || accumulated_y <= -1.0f)
-    {
-        dy = (int8_t)accumulated_y;
-        accumulated_y -= (float)dy;
-    }
-
-    // Send directly - fast and responsive
+    // Send single report per sample - fast, no delays, no splitting
+    // Smoothing prevents jumps by ramping velocity gradually
+    // At 240Hz even moderate pixel values look buttery smooth
     sendMouseReport(dx, dy, 0, button_state);
 
     // Debug logging (throttled)
@@ -600,7 +584,7 @@ void USBHIDManager::updateMouseFromPosition(float pos_x, float pos_y)
     if (++pos_debug_counter >= 100)
     {
         pos_debug_counter = 0;
-        ESP_LOGI(TAG, "🖱️  Mouse: pos(%.1f, %.1f) → vel(%.2f, %.2f) → Δ(%d, %d)",
+        ESP_LOGI(TAG, "🖱️  Mouse: pos(%.1f, %.1f) → smooth(%.2f, %.2f) → Δ(%d, %d)",
                  pos_x, pos_y, smoothed_mouse_x, smoothed_mouse_y, dx, dy);
     }
 #endif
